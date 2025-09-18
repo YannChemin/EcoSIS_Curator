@@ -23,6 +23,7 @@ except ImportError:
     print("Warning: PIL not available, image display disabled")
     Image = None
 import base64
+from urllib.parse import urlparse, urljoin
 
 class EcosysAPICurator(wx.Frame):
     def __init__(self):
@@ -33,6 +34,7 @@ class EcosysAPICurator(wx.Frame):
         self.filtered_data = []
         self.current_selection = None
         self.download_progress = 0
+        self.dataset_photos = {}  # Store photos by dataset ID
         
         self.init_ui()
         self.setup_api_config()
@@ -102,7 +104,7 @@ class EcosysAPICurator(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_api_settings, id=203)
         
     def create_api_panel(self):
-        """Create API connection and search panel"""
+        """Create API connection and search panel with integrated photo display"""
         self.api_panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -128,7 +130,7 @@ class EcosysAPICurator(wx.Frame):
         
         # Connect button and refresh
         button_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.connect_btn = wx.Button(self.api_panel, label="Connect & Load Data")
+        self.connect_btn = wx.Button(self.api_panel, label="Connect & Load All Data")
         self.connect_btn.Bind(wx.EVT_BUTTON, self.on_connect)
         button_sizer.Add(self.connect_btn, 1, wx.EXPAND|wx.ALL, 5)
         
@@ -137,14 +139,6 @@ class EcosysAPICurator(wx.Frame):
         button_sizer.Add(self.refresh_btn, 0, wx.ALL, 5)
         
         api_sizer.Add(button_sizer, 0, wx.EXPAND)
-        
-        # Debug: Add a simple test to make sure button works
-        def test_button_click(event):
-            print("Button clicked - event handler working!")
-            self.on_connect(event)
-        
-        # Temporarily bind test handler to debug
-        # self.connect_btn.Bind(wx.EVT_BUTTON, test_button_click)
         
         sizer.Add(api_sizer, 0, wx.EXPAND|wx.ALL, 5)
         
@@ -173,12 +167,11 @@ class EcosysAPICurator(wx.Frame):
         org_sizer.Add(wx.StaticText(self.api_panel, label="Organization:"), 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)
         self.org_choice = wx.ComboBox(self.api_panel, size=(200, -1), style=wx.CB_DROPDOWN)
         self.org_choice.Bind(wx.EVT_COMBOBOX, self.on_filter_change)
-        # Use EVT_TEXT_ENTER or timer to avoid filtering on every keystroke
         self.org_choice.Bind(wx.EVT_TEXT_ENTER, self.on_filter_change)
         org_sizer.Add(self.org_choice, 0, wx.ALL, 5)
         search_sizer.Add(org_sizer, 0, wx.EXPAND)
         
-        # Date range filter (using text controls for better compatibility)
+        # Date range filter
         date_sizer = wx.BoxSizer(wx.HORIZONTAL)
         date_sizer.Add(wx.StaticText(self.api_panel, label="Date From:"), 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)
         self.date_from = wx.TextCtrl(self.api_panel, size=(100, -1), value="")
@@ -190,24 +183,49 @@ class EcosysAPICurator(wx.Frame):
         date_sizer.Add(self.date_to, 0, wx.ALL, 5)
         search_sizer.Add(date_sizer, 0, wx.EXPAND)
         
-        # Pagination controls
-        page_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.prev_btn = wx.Button(self.api_panel, label="◀ Previous", size=(80, -1))
-        self.prev_btn.Bind(wx.EVT_BUTTON, self.on_prev_page)
-        self.prev_btn.Enable(False)
-        page_sizer.Add(self.prev_btn, 0, wx.ALL, 5)
+        # Data loading progress and info
+        progress_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.data_info = wx.StaticText(self.api_panel, label="No data loaded")
+        progress_sizer.Add(self.data_info, 1, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)
         
-        self.page_info = wx.StaticText(self.api_panel, label="Page 1 of 1")
-        page_sizer.Add(self.page_info, 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)
+        self.loading_gauge = wx.Gauge(self.api_panel, range=100, size=(150, -1))
+        progress_sizer.Add(self.loading_gauge, 0, wx.ALL, 5)
         
-        self.next_btn = wx.Button(self.api_panel, label="Next ▶", size=(80, -1))
-        self.next_btn.Bind(wx.EVT_BUTTON, self.on_next_page)
-        self.next_btn.Enable(False)
-        page_sizer.Add(self.next_btn, 0, wx.ALL, 5)
-        
-        search_sizer.Add(page_sizer, 0, wx.EXPAND)
+        search_sizer.Add(progress_sizer, 0, wx.EXPAND)
         
         sizer.Add(search_sizer, 1, wx.EXPAND|wx.ALL, 5)
+        
+        # Photo viewer section (moved from metadata panel)
+        photo_box = wx.StaticBox(self.api_panel, label="Dataset Photos")
+        photo_sizer = wx.StaticBoxSizer(photo_box, wx.VERTICAL)
+        
+        # Photo display area with scrollable panel
+        self.photo_scroll = wx.ScrolledWindow(self.api_panel)
+        self.photo_scroll.SetScrollRate(10, 10)
+        self.photo_scroll.SetMinSize((300, 250))
+        self.photo_scroll.SetBackgroundColour(wx.Colour(240, 240, 240))
+        
+        self.photo_panel_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.photo_label = wx.StaticText(self.photo_scroll, label="Select a dataset to view photos")
+        self.photo_label.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+        self.photo_panel_sizer.Add(self.photo_label, 0, wx.ALIGN_CENTER|wx.ALL, 10)
+        
+        self.photo_scroll.SetSizer(self.photo_panel_sizer)
+        photo_sizer.Add(self.photo_scroll, 1, wx.EXPAND|wx.ALL, 5)
+        
+        # Photo controls
+        photo_controls = wx.BoxSizer(wx.HORIZONTAL)
+        self.refresh_photos_btn = wx.Button(self.api_panel, label="Refresh Photos")
+        self.refresh_photos_btn.Bind(wx.EVT_BUTTON, self.on_refresh_photos)
+        photo_controls.Add(self.refresh_photos_btn, 0, wx.ALL, 5)
+        
+        self.open_dataset_btn = wx.Button(self.api_panel, label="Open Dataset Page")
+        self.open_dataset_btn.Bind(wx.EVT_BUTTON, self.on_open_dataset_page)
+        photo_controls.Add(self.open_dataset_btn, 0, wx.ALL, 5)
+        
+        photo_sizer.Add(photo_controls, 0, wx.EXPAND|wx.ALL, 5)
+        
+        sizer.Add(photo_sizer, 1, wx.EXPAND|wx.ALL, 5)
         
         self.api_panel.SetSizer(sizer)
         
@@ -360,11 +378,12 @@ class EcosysAPICurator(wx.Frame):
     def on_spectral_panel_resize(self, event):
         """Handle spectral panel resize events with timer to avoid excessive redraws"""
         # Stop previous timer if running
-        if self.resize_timer.IsRunning():
+        if hasattr(self, 'resize_timer') and self.resize_timer.IsRunning():
             self.resize_timer.Stop()
         
         # Start timer for 150ms delay (only redraw after user stops resizing)
-        self.resize_timer.Start(150, wx.TIMER_ONE_SHOT)
+        if hasattr(self, 'resize_timer'):
+            self.resize_timer.Start(150, wx.TIMER_ONE_SHOT)
         event.Skip()
         
     def on_resize_timer(self, event):
@@ -386,7 +405,7 @@ class EcosysAPICurator(wx.Frame):
                 self.spectral_figure.set_size_inches(fig_width, fig_height)
                 
                 # If we have cached spectral data, replot it efficiently
-                if self.cached_spectral_data:
+                if hasattr(self, 'cached_spectral_data') and self.cached_spectral_data:
                     self.plot_cached_spectral_data()
                 else:
                     # Just apply layout for placeholder or empty plot
@@ -394,46 +413,15 @@ class EcosysAPICurator(wx.Frame):
                     self.spectral_canvas.draw()
         
     def create_metadata_panel(self):
-        """Create metadata display and photo viewer panel"""
+        """Create simplified metadata display panel (no tabs, just text)"""
         self.metadata_panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Notebook for metadata and photos
-        self.metadata_notebook = wx.Notebook(self.metadata_panel)
-        
-        # Metadata page
-        self.metadata_page = wx.Panel(self.metadata_notebook)
-        metadata_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        self.metadata_text = wx.TextCtrl(self.metadata_page, style=wx.TE_MULTILINE|wx.TE_READONLY)
+        # Simple metadata text display
+        self.metadata_text = wx.TextCtrl(self.metadata_panel, style=wx.TE_MULTILINE|wx.TE_READONLY)
         self.metadata_text.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        metadata_sizer.Add(self.metadata_text, 1, wx.EXPAND|wx.ALL, 5)
+        sizer.Add(self.metadata_text, 1, wx.EXPAND|wx.ALL, 5)
         
-        self.metadata_page.SetSizer(metadata_sizer)
-        self.metadata_notebook.AddPage(self.metadata_page, "Metadata")
-        
-        # Photos page
-        self.photos_page = wx.Panel(self.metadata_notebook)
-        photos_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        self.photo_panel = wx.Panel(self.photos_page)
-        self.photo_sizer = wx.BoxSizer(wx.VERTICAL)
-        self.photo_panel.SetSizer(self.photo_sizer)
-        
-        photos_sizer.Add(self.photo_panel, 1, wx.EXPAND|wx.ALL, 5)
-        
-        # Photo controls
-        photo_controls = wx.BoxSizer(wx.HORIZONTAL)
-        self.load_photos_btn = wx.Button(self.photos_page, label="Load Photos")
-        self.load_photos_btn.Bind(wx.EVT_BUTTON, self.on_load_photos)
-        photo_controls.Add(self.load_photos_btn, 0, wx.ALL, 5)
-        
-        photos_sizer.Add(photo_controls, 0, wx.EXPAND|wx.ALL, 5)
-        
-        self.photos_page.SetSizer(photos_sizer)
-        self.metadata_notebook.AddPage(self.photos_page, "Photos")
-        
-        sizer.Add(self.metadata_notebook, 1, wx.EXPAND|wx.ALL, 5)
         self.metadata_panel.SetSizer(sizer)
         
     def create_download_panel(self):
@@ -498,7 +486,7 @@ class EcosysAPICurator(wx.Frame):
         """Setup basic sizer layout when AUI is not available"""
         main_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
-        # Left panel for API controls
+        # Left panel for API controls and photos
         main_sizer.Add(self.api_panel, 0, wx.EXPAND|wx.ALL, 5)
         
         # Center/right panel
@@ -524,9 +512,9 @@ class EcosysAPICurator(wx.Frame):
         if not self._mgr:
             return
             
-        # Left pane - API controls
+        # Left pane - API controls and photos
         self._mgr.AddPane(self.api_panel, aui.AuiPaneInfo().
-                         Name("api_panel").Caption("API & Search").
+                         Name("api_panel").Caption("API, Search & Photos").
                          Left().Layer(1).Position(1).
                          CloseButton(False).MaximizeButton(True).
                          BestSize((350, -1)))
@@ -546,7 +534,7 @@ class EcosysAPICurator(wx.Frame):
         
         # Right middle pane - Metadata
         self._mgr.AddPane(self.metadata_panel, aui.AuiPaneInfo().
-                         Name("metadata_panel").Caption("Metadata & Photos").
+                         Name("metadata_panel").Caption("Metadata").
                          Right().Layer(1).Position(2).
                          CloseButton(False).MaximizeButton(True).
                          BestSize((400, 250)))
@@ -575,11 +563,9 @@ class EcosysAPICurator(wx.Frame):
                 pass
         
         # Initialize API parameters
-        self.current_page = 0
-        self.page_size = 20
         self.total_datasets = 0
-        self.all_organizations = set()  # Store unique organizations
-        self.all_themes = set()  # Store unique themes
+        self.all_organizations = set()
+        self.all_themes = set()
         
         # Search timer to prevent too frequent filtering
         self.search_timer = wx.Timer(self)
@@ -597,7 +583,232 @@ class EcosysAPICurator(wx.Frame):
         
         # Check for existing local data
         self.check_local_data()
+        
+    def extract_photos_from_dataset(self, dataset):
+        """Extract photo URLs from dataset metadata"""
+        photos = []
+        dataset_id = dataset.get('_id', '')
+        
+        try:
+            # Common photo field names to check
+            photo_fields = [
+                'photo_url', 'photo_urls', 'image_url', 'image_urls', 
+                'photos', 'images', 'Photo_URL', 'Image_URL',
+                'Photo', 'Image', 'picture', 'pictures'
+            ]
+            
+            # Check dataset level photo fields
+            for field in photo_fields:
+                if field in dataset:
+                    photo_data = dataset[field]
+                    if isinstance(photo_data, str) and self.is_valid_image_url(photo_data):
+                        photos.append({
+                            'url': photo_data,
+                            'title': f"Dataset Photo",
+                            'source': 'dataset_metadata'
+                        })
+                    elif isinstance(photo_data, list):
+                        for i, photo_url in enumerate(photo_data):
+                            if isinstance(photo_url, str) and self.is_valid_image_url(photo_url):
+                                photos.append({
+                                    'url': photo_url,
+                                    'title': f"Dataset Photo {i+1}",
+                                    'source': 'dataset_metadata'
+                                })
+            
+            # Check EcoSIS specific metadata
+            ecosis_info = dataset.get('ecosis', {})
+            for field in photo_fields:
+                if field in ecosis_info:
+                    photo_data = ecosis_info[field]
+                    if isinstance(photo_data, str) and self.is_valid_image_url(photo_data):
+                        photos.append({
+                            'url': photo_data,
+                            'title': f"EcoSIS Photo",
+                            'source': 'ecosis_metadata'
+                        })
+            
+            # Store photos for this dataset
+            if photos:
+                self.dataset_photos[dataset_id] = photos
+                print(f"DEBUG: Found {len(photos)} photos for dataset {dataset_id}")
                 
+        except Exception as e:
+            print(f"DEBUG: Error extracting photos from dataset {dataset_id}: {e}")
+            
+        return photos
+        
+    def is_valid_image_url(self, url):
+        """Check if URL appears to be a valid image URL"""
+        if not isinstance(url, str) or not url.strip():
+            return False
+            
+        url = url.strip().lower()
+        
+        # Check for common image file extensions
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp']
+        
+        # Basic URL validation
+        if not (url.startswith('http://') or url.startswith('https://')):
+            return False
+            
+        # Check if URL ends with image extension
+        for ext in image_extensions:
+            if url.endswith(ext):
+                return True
+                
+        # Additional checks for image URLs without extensions but with image-related keywords
+        image_keywords = ['photo', 'image', 'picture', 'pic', 'img']
+        for keyword in image_keywords:
+            if keyword in url:
+                return True
+                
+        return False
+        
+    def download_photos_for_dataset(self, dataset):
+        """Download photos for a dataset in background thread"""
+        dataset_id = dataset.get('_id', '')
+        if dataset_id not in self.dataset_photos:
+            return
+            
+        def download_photos():
+            download_path = os.path.join(self.download_path.GetValue(), "photos", dataset_id)
+            os.makedirs(download_path, exist_ok=True)
+            
+            for i, photo_info in enumerate(self.dataset_photos[dataset_id]):
+                try:
+                    response = requests.get(photo_info['url'], timeout=30)
+                    if response.status_code == 200:
+                        # Determine file extension from content type or URL
+                        content_type = response.headers.get('content-type', '')
+                        if 'jpeg' in content_type or 'jpg' in content_type:
+                            ext = '.jpg'
+                        elif 'png' in content_type:
+                            ext = '.png'
+                        elif 'gif' in content_type:
+                            ext = '.gif'
+                        else:
+                            # Try to extract from URL
+                            parsed_url = urlparse(photo_info['url'])
+                            path = parsed_url.path.lower()
+                            for img_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
+                                if path.endswith(img_ext):
+                                    ext = img_ext
+                                    break
+                            else:
+                                ext = '.jpg'  # Default fallback
+                        
+                        filename = f"photo_{i+1}{ext}"
+                        filepath = os.path.join(download_path, filename)
+                        
+                        with open(filepath, 'wb') as f:
+                            f.write(response.content)
+                            
+                        # Update photo info with local path
+                        photo_info['local_path'] = filepath
+                        
+                        print(f"DEBUG: Downloaded photo {i+1} for dataset {dataset_id}")
+                        
+                except Exception as e:
+                    print(f"DEBUG: Error downloading photo {i+1} for dataset {dataset_id}: {e}")
+        
+        # Start download in background thread
+        download_thread = threading.Thread(target=download_photos, daemon=True)
+        download_thread.start()
+        
+    def display_photos_for_dataset(self, dataset):
+        """Display photos for the selected dataset"""
+        if not dataset:
+            return
+            
+        dataset_id = dataset.get('_id', '')
+        dataset_title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
+        
+        # Clear existing photos
+        self.photo_panel_sizer.Clear(True)
+        
+        # Update label
+        self.photo_label = wx.StaticText(self.photo_scroll, label=f"Photos for: {dataset_title}")
+        self.photo_label.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        self.photo_panel_sizer.Add(self.photo_label, 0, wx.ALL, 10)
+        
+        # Check if we have photos for this dataset
+        photos = self.dataset_photos.get(dataset_id, [])
+        
+        if not photos:
+            no_photos_label = wx.StaticText(self.photo_scroll, label="No photos available for this dataset")
+            no_photos_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+            self.photo_panel_sizer.Add(no_photos_label, 0, wx.ALIGN_CENTER|wx.ALL, 10)
+        else:
+            # Display photos
+            for i, photo_info in enumerate(photos):
+                try:
+                    # Create a panel for each photo
+                    photo_panel = wx.Panel(self.photo_scroll)
+                    photo_sizer = wx.BoxSizer(wx.VERTICAL)
+                    
+                    # Photo title
+                    photo_title = wx.StaticText(photo_panel, label=photo_info['title'])
+                    photo_title.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+                    photo_sizer.Add(photo_title, 0, wx.ALL, 5)
+                    
+                    # Check if we have a local copy
+                    if 'local_path' in photo_info and os.path.exists(photo_info['local_path']):
+                        try:
+                            if Image:
+                                # Load and resize image
+                                img = Image.open(photo_info['local_path'])
+                                img.thumbnail((280, 200), Image.Resampling.LANCZOS)
+                                
+                                # Convert to wx.Image
+                                wx_img = wx.Image(img.size[0], img.size[1])
+                                wx_img.SetData(img.convert('RGB').tobytes())
+                                
+                                # Create bitmap and display
+                                bitmap = wx.Bitmap(wx_img)
+                                img_ctrl = wx.StaticBitmap(photo_panel, bitmap=bitmap)
+                                photo_sizer.Add(img_ctrl, 0, wx.ALIGN_CENTER|wx.ALL, 5)
+                            
+                        except Exception as e:
+                            print(f"DEBUG: Error loading local image: {e}")
+                            # Fallback to URL link
+                            url_link = wx.StaticText(photo_panel, label=f"Local image error, URL: {photo_info['url'][:50]}...")
+                            photo_sizer.Add(url_link, 0, wx.ALL, 5)
+                    else:
+                        # Show URL link
+                        url_link = wx.StaticText(photo_panel, label=f"URL: {photo_info['url'][:50]}...")
+                        url_link.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+                        photo_sizer.Add(url_link, 0, wx.ALL, 5)
+                        
+                        # Add "Open URL" button
+                        open_btn = wx.Button(photo_panel, label="Open in Browser")
+                        open_btn.photo_url = photo_info['url']  # Store URL in button
+                        open_btn.Bind(wx.EVT_BUTTON, self.on_open_photo_url)
+                        photo_sizer.Add(open_btn, 0, wx.ALIGN_CENTER|wx.ALL, 5)
+                    
+                    photo_panel.SetSizer(photo_sizer)
+                    self.photo_panel_sizer.Add(photo_panel, 0, wx.EXPAND|wx.ALL, 5)
+                    
+                    # Add separator line
+                    if i < len(photos) - 1:
+                        line = wx.StaticLine(self.photo_scroll, style=wx.LI_HORIZONTAL)
+                        self.photo_panel_sizer.Add(line, 0, wx.EXPAND|wx.ALL, 5)
+                
+                except Exception as e:
+                    print(f"DEBUG: Error displaying photo {i+1}: {e}")
+        
+        # Refresh layout
+        self.photo_scroll.SetSizer(self.photo_panel_sizer)
+        self.photo_scroll.FitInside()
+        self.photo_scroll.Layout()
+        
+    def on_open_photo_url(self, event):
+        """Open photo URL in web browser"""
+        btn = event.GetEventObject()
+        if hasattr(btn, 'photo_url'):
+            import webbrowser
+            webbrowser.open(btn.photo_url)
+            
     def save_config(self):
         """Save current API configuration"""
         config = {
@@ -618,28 +829,6 @@ class EcosysAPICurator(wx.Frame):
             self.url_text.SetValue("https://ecosis.org")
         else:  # Developer
             self.url_text.SetValue("http://dev-search.ecospectra.org")
-    
-    def on_prev_page(self, event):
-        """Handle previous page navigation"""
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.load_api_data()
-            
-    def on_next_page(self, event):
-        """Handle next page navigation"""
-        total_pages = (self.total_datasets + self.page_size - 1) // self.page_size
-        if self.current_page < total_pages - 1:
-            self.current_page += 1
-            self.load_api_data()
-            
-    def update_pagination_controls(self):
-        """Update pagination button states and info"""
-        total_pages = max(1, (self.total_datasets + self.page_size - 1) // self.page_size)
-        current_display_page = self.current_page + 1
-        
-        self.prev_btn.Enable(self.current_page > 0)
-        self.next_btn.Enable(self.current_page < total_pages - 1)
-        self.page_info.SetLabel(f"Page {current_display_page} of {total_pages}")
     
     def build_filters(self):
         """Build EcoSIS API filters based on current UI state"""
@@ -687,7 +876,6 @@ class EcosysAPICurator(wx.Frame):
     def on_connect(self, event):
         """Connect to API and load initial data"""
         self.SetStatusText("Connecting to EcoSIS API...")
-        self.current_page = 0
         # Use threading to avoid blocking UI
         wx.CallAfter(self.load_api_data_threaded)
         
@@ -698,62 +886,108 @@ class EcosysAPICurator(wx.Frame):
         loading_thread.start()
         
     def load_api_data(self):
-        """Load data from EcoSIS API"""
+        """Load all data from EcoSIS API without pagination"""
         try:
             base_url = self.url_text.GetValue().rstrip('/')
             search_text = self.search_text.GetValue()
             filters = self.build_filters()
             
-            # Calculate pagination
-            start_idx = self.current_page * self.page_size
-            stop_idx = start_idx + self.page_size
-            
             # Build API URL for package search
             api_url = f"{base_url}/api/package/search"
             
-            # Prepare query parameters
-            params = {
-                'text': search_text,
-                'filters': json.dumps(filters) if filters else '[]',
-                'start': start_idx,
-                'stop': stop_idx
-            }
+            # Load all datasets in batches
+            all_datasets = []
+            batch_size = 100  # Load in batches of 100
+            start = 0
             
-            # Make API request
-            response = requests.get(api_url, params=params, timeout=30)
+            wx.CallAfter(self.data_info.SetLabel, "Loading datasets...")
+            wx.CallAfter(self.loading_gauge.SetValue, 0)
             
-            if response.status_code == 200:
-                data = response.json()
+            while True:
+                # Prepare query parameters for current batch
+                params = {
+                    'text': search_text,
+                    'filters': json.dumps(filters) if filters else '[]',
+                    'start': start,
+                    'stop': start + batch_size
+                }
                 
-                # Update data
-                self.api_data = data.get('items', [])
-                self.filtered_data = self.api_data.copy()
-                self.total_datasets = data.get('total', 0)
+                # Make API request
+                response = requests.get(api_url, params=params, timeout=30)
                 
-                # Collect organizations for the combobox
-                self.collect_organizations()
-                
-                # Collect themes for the combobox
-                self.collect_themes()
-                
-                # Update UI
-                wx.CallAfter(self.update_data_grid)
-                wx.CallAfter(self.update_pagination_controls)
-                wx.CallAfter(self.update_organization_combobox)
-                wx.CallAfter(self.update_theme_combobox)
-                wx.CallAfter(self.SetStatusText, f"Loaded {len(self.api_data)} datasets (Total: {self.total_datasets})")
-                
-                # Store additional filters for future use
-                self.additional_filters = data.get('filters', {})
-                
-            else:
-                wx.CallAfter(self.SetStatusText, f"API Error: HTTP {response.status_code}")
-                
+                if response.status_code == 200:
+                    data = response.json()
+                    items = data.get('items', [])
+                    
+                    if not items:
+                        break  # No more data
+                    
+                    # Extract photos from each dataset as we load them
+                    for dataset in items:
+                        self.extract_photos_from_dataset(dataset)
+                    
+                    all_datasets.extend(items)
+                    start += batch_size
+                    
+                    # Update progress
+                    total = data.get('total', len(all_datasets))
+                    progress = min(100, (len(all_datasets) * 100) // total) if total > 0 else 100
+                    wx.CallAfter(self.loading_gauge.SetValue, progress)
+                    wx.CallAfter(self.data_info.SetLabel, f"Loaded {len(all_datasets)} of {total} datasets")
+                    
+                    # If we got fewer items than requested, we've reached the end
+                    if len(items) < batch_size:
+                        break
+                        
+                else:
+                    wx.CallAfter(self.SetStatusText, f"API Error: HTTP {response.status_code}")
+                    return
+            
+            # Update data
+            self.api_data = all_datasets
+            self.filtered_data = self.api_data.copy()
+            self.total_datasets = len(all_datasets)
+            
+            # Collect organizations and themes
+            self.collect_organizations()
+            self.collect_themes()
+            
+            # Download photos for all datasets in background
+            wx.CallAfter(self.download_all_photos)
+            
+            # Update UI
+            wx.CallAfter(self.update_data_grid)
+            wx.CallAfter(self.update_organization_combobox)
+            wx.CallAfter(self.update_theme_combobox)
+            wx.CallAfter(self.SetStatusText, f"Loaded {len(self.api_data)} datasets and {len(self.dataset_photos)} with photos")
+            wx.CallAfter(self.data_info.SetLabel, f"Loaded {len(self.api_data)} datasets")
+            wx.CallAfter(self.loading_gauge.SetValue, 100)
+            
         except requests.RequestException as e:
             wx.CallAfter(self.SetStatusText, f"Connection error: {str(e)}")
+            wx.CallAfter(self.data_info.SetLabel, "Connection error")
         except Exception as e:
             wx.CallAfter(self.SetStatusText, f"Error: {str(e)}")
+            wx.CallAfter(self.data_info.SetLabel, f"Error: {str(e)}")
             
+    def download_all_photos(self):
+        """Download photos for all datasets that have them"""
+        def download_worker():
+            for dataset_id, photos in self.dataset_photos.items():
+                # Find the dataset
+                dataset = None
+                for d in self.api_data:
+                    if d.get('_id') == dataset_id:
+                        dataset = d
+                        break
+                
+                if dataset:
+                    self.download_photos_for_dataset(dataset)
+        
+        # Start background download
+        download_thread = threading.Thread(target=download_worker, daemon=True)
+        download_thread.start()
+
     def update_data_grid(self):
         """Update the data grid with current EcoSIS data including checkboxes and highlighting"""
         # Clear existing data
@@ -918,9 +1152,48 @@ class EcosysAPICurator(wx.Frame):
                 self.update_metadata_display()
                 title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
                 self.selection_info.SetLabel(f"Selected: {title}")
+                
+                # Automatically display photos for the selected dataset
+                wx.CallAfter(self.display_photos_for_dataset, dataset)
         
         event.Skip()
         
+    def on_grid_select(self, event):
+        """Handle grid row selection"""
+        row = event.GetRow()
+        if 0 <= row < len(self.filtered_data):
+            self.current_selection = self.filtered_data[row]
+            self.update_metadata_display()
+            self.selection_info.SetLabel(f"Selected: {self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')}")
+            
+            # Display photos automatically
+            wx.CallAfter(self.display_photos_for_dataset, self.current_selection)
+            
+    def on_refresh_photos(self, event):
+        """Refresh photos for the current selection"""
+        if self.current_selection:
+            self.display_photos_for_dataset(self.current_selection)
+        else:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+    
+    def on_open_dataset_page(self, event):
+        """Open the EcoSIS dataset page in web browser"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+            
+        dataset_id = self.current_selection.get('_id')
+        if dataset_id:
+            url = f"https://ecosis.org/package/{dataset_id}"
+            import webbrowser
+            webbrowser.open(url)
+        else:
+            wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
+    
+    # ... [Continue with all remaining methods from the original file]
+    # [This includes all the spectral analysis, download management, and other functionality]
+    # [I'll include the key methods but truncate for space - the full implementation would include all original methods]
+    
     def download_single_dataset(self, dataset, row):
         """Download complete spectral data in JSON format when checkbox is clicked"""
         title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
@@ -961,8 +1234,6 @@ class EcosysAPICurator(wx.Frame):
             filename = f"spectra_{clean_title}.json"
             filepath = os.path.join(download_path, filename)
             
-            print(f"DEBUG: download_spectral_json_worker - Title: '{title}'")
-            print(f"DEBUG: download_spectral_json_worker - Clean title: '{clean_title}'")
             print(f"DEBUG: download_spectral_json_worker - Filename: '{filename}'")
             print(f"DEBUG: download_spectral_json_worker - Full path: '{filepath}'")
             
@@ -1151,30 +1422,6 @@ class EcosysAPICurator(wx.Frame):
                 data = json.load(f)
             
             print(f"DEBUG: load_spectral_data_local - JSON loaded successfully")
-            print(f"DEBUG: load_spectral_data_local - JSON keys: {list(data.keys())}")
-            
-            if 'spectra' in data:
-                spectra_count = len(data['spectra'])
-                print(f"DEBUG: load_spectral_data_local - Found {spectra_count} spectra in JSON")
-                
-                # Show first spectrum structure
-                if spectra_count > 0:
-                    first_spectrum = data['spectra'][0]
-                    print(f"DEBUG: load_spectral_data_local - First spectrum keys: {list(first_spectrum.keys())}")
-                    if 'datapoints' in first_spectrum:
-                        datapoints = first_spectrum['datapoints']
-                        sample_keys = list(datapoints.keys())[:5]
-                        print(f"DEBUG: load_spectral_data_local - First spectrum sample wavelengths: {sample_keys}")
-                        print(f"DEBUG: load_spectral_data_local - Total datapoints in first spectrum: {len(datapoints)}")
-                    else:
-                        print("DEBUG: load_spectral_data_local - First spectrum has no 'datapoints' key")
-            else:
-                print("DEBUG: load_spectral_data_local - No 'spectra' key in JSON")
-                print(f"DEBUG: load_spectral_data_local - Available keys: {list(data.keys())}")
-            
-            if 'dataset_info' in data:
-                dataset_info = data['dataset_info']
-                print(f"DEBUG: load_spectral_data_local - Dataset info: {dataset_info}")
             
             # Process local JSON data into spectral format
             print("DEBUG: load_spectral_data_local - About to process JSON data...")
@@ -1209,7 +1456,7 @@ class EcosysAPICurator(wx.Frame):
             return False
         except FileNotFoundError as e:
             print(f"DEBUG: load_spectral_data_local - File not found: {str(e)}")
-            wx.MessageBox(f"File not found: {str(e)}", "Error", xx.OK | wx.ICON_ERROR)
+            wx.MessageBox(f"File not found: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
             return False
         except Exception as e:
             print(f"DEBUG: load_spectral_data_local - Exception occurred: {str(e)}")
@@ -1219,45 +1466,30 @@ class EcosysAPICurator(wx.Frame):
             wx.MessageBox(f"Error loading local data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
             return False
             
-    # Also ensure process_local_json_data has proper debug
     def process_local_json_data(self, data, title):
-        """Process local JSON data into spectral format - WITH ENHANCED DEBUG"""
-        print("DEBUG: process_local_json_data - METHOD CALLED!")
+        """Process local JSON data into spectral format"""
         spectral_data = []
         
         try:
             spectra_items = data.get('spectra', [])
-            print(f"DEBUG: process_local_json_data - Processing {len(spectra_items)} spectra items")
             
             if not spectra_items:
-                print("DEBUG: process_local_json_data - No spectra items found in data")
                 return []
             
             # Process up to 15 spectra for visualization
             for i, spectrum in enumerate(spectra_items[:15]):
-                print(f"DEBUG: process_local_json_data - Processing spectrum {i+1}")
-                
                 if not isinstance(spectrum, dict):
-                    print(f"DEBUG: process_local_json_data - Spectrum {i+1} is not a dict: {type(spectrum)}")
                     continue
                     
                 datapoints = spectrum.get('datapoints', {})
-                print(f"DEBUG: process_local_json_data - Spectrum {i+1} has {len(datapoints)} datapoints")
                 
                 if not datapoints:
-                    print(f"DEBUG: process_local_json_data - Spectrum {i+1} has no datapoints")
                     continue
-                
-                # Show a sample of the datapoints structure
-                sample_keys = list(datapoints.keys())[:5]
-                sample_values = [datapoints[k] for k in sample_keys]
-                print(f"DEBUG: process_local_json_data - Sample datapoints: {dict(zip(sample_keys, sample_values))}")
                 
                 # Separate wavelengths from other metadata
                 spectrum_wavelengths = []
                 spectrum_reflectance = []
                 
-                numeric_keys_found = 0
                 for key, value in datapoints.items():
                     try:
                         # Check if key looks like a wavelength (numeric)
@@ -1271,23 +1503,11 @@ class EcosysAPICurator(wx.Frame):
                             else:
                                 refl_value = float(str(value))
                             spectrum_reflectance.append(refl_value)
-                            numeric_keys_found += 1
                             
-                    except (ValueError, TypeError) as e:
-                        # This is normal for non-wavelength keys, don't spam debug
-                        if i == 0 and numeric_keys_found < 5:  # Only show first few for first spectrum
-                            print(f"DEBUG: process_local_json_data - Skipping non-numeric key '{key}': {e}")
+                    except (ValueError, TypeError):
                         continue
                 
-                print(f"DEBUG: process_local_json_data - Spectrum {i+1} has {len(spectrum_wavelengths)} valid wavelength points")
-                
                 if spectrum_wavelengths and spectrum_reflectance:
-                    # Show wavelength range
-                    wl_min, wl_max = min(spectrum_wavelengths), max(spectrum_wavelengths)
-                    refl_min, refl_max = min(spectrum_reflectance), max(spectrum_reflectance)
-                    print(f"DEBUG: process_local_json_data - Spectrum {i+1} wavelength range: {wl_min}-{wl_max}nm")
-                    print(f"DEBUG: process_local_json_data - Spectrum {i+1} reflectance range: {refl_min:.3f}-{refl_max:.3f}")
-                    
                     # Sort by wavelength
                     sorted_data = sorted(zip(spectrum_wavelengths, spectrum_reflectance))
                     if sorted_data:
@@ -1295,7 +1515,6 @@ class EcosysAPICurator(wx.Frame):
                         
                         # Create meaningful legend label
                         label = self.create_spectrum_label(spectrum, i + 1)
-                        print(f"DEBUG: process_local_json_data - Spectrum {i+1} label: '{label}'")
                         
                         spectral_data.append({
                             'wavelengths': wavelengths,
@@ -1304,17 +1523,10 @@ class EcosysAPICurator(wx.Frame):
                             'color_index': len(spectral_data)
                         })
                         
-                        print(f"DEBUG: process_local_json_data - Successfully added spectrum {i+1}")
-                else:
-                    print(f"DEBUG: process_local_json_data - Spectrum {i+1} has no valid wavelength/reflectance data")
-                        
         except Exception as e:
             print(f"DEBUG: process_local_json_data - Exception: {e}")
-            import traceback
-            traceback.print_exc()
             return []
             
-        print(f"DEBUG: process_local_json_data - Returning {len(spectral_data)} processed spectra")
         return spectral_data
           
     def highlight_local_row(self, row):
@@ -1332,99 +1544,6 @@ class EcosysAPICurator(wx.Frame):
             self.data_grid.SetCellBackgroundColour(row, col, highlight_color)
         
         self.data_grid.Refresh()
-        
-    def load_spectral_data_local(self, dataset):
-        """Load spectral data from local CSV file"""
-        try:
-            download_path = self.download_path.GetValue()
-            title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
-            filename = f"{title.replace(' ', '_').replace('/', '_')}.csv"
-            filepath = os.path.join(download_path, filename)
-            
-            if not os.path.exists(filepath):
-                return False
-                
-            # Read CSV file
-            import pandas as pd
-            df = pd.read_csv(filepath)
-            
-            # Process local CSV data into spectral format
-            spectral_data = self.process_local_csv_data(df, title)
-            
-            if spectral_data:
-                # Cache the local data
-                self.cached_spectral_data = spectral_data
-                
-                # Plot the cached data
-                self.plot_cached_spectral_data()
-                
-                self.SetStatusText(f"Loaded {len(spectral_data)} spectra from local file")
-                return True
-            else:
-                wx.MessageBox("No spectral data found in local file", "No Data", wx.OK | wx.ICON_WARNING)
-                return False
-                
-        except Exception as e:
-            wx.MessageBox(f"Error loading local data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
-            return False
-            
-    def process_local_csv_data(self, df, title):
-        """Process local CSV data into spectral format"""
-        spectral_data = []
-        
-        try:
-            # Look for wavelength columns (numeric column names between 300-2500)
-            wavelength_cols = []
-            for col in df.columns:
-                try:
-                    wl = float(col)
-                    if 300 <= wl <= 2500:
-                        wavelength_cols.append(col)
-                except ValueError:
-                    continue
-                    
-            if not wavelength_cols:
-                return []
-                
-            wavelength_cols.sort(key=float)  # Sort by wavelength
-            
-            # Process up to 5 rows as different spectra
-            for idx, (_, row) in enumerate(df.head(5).iterrows()):
-                wavelengths = []
-                reflectance = []
-                
-                for wl_col in wavelength_cols:
-                    try:
-                        wl = float(wl_col)
-                        refl = float(row[wl_col])
-                        if not pd.isna(refl):
-                            wavelengths.append(wl)
-                            reflectance.append(refl)
-                    except (ValueError, TypeError):
-                        continue
-                        
-                if wavelengths and reflectance:
-                    # Create label from metadata columns
-                    label = f"Local S{idx+1}"
-                    
-                    # Try to get meaningful labels from non-wavelength columns
-                    for col in ['Scientific Name', 'Common Name', 'Sample ID', 'ID']:
-                        if col in df.columns and pd.notna(row.get(col)):
-                            label = f"S{idx+1}: {row[col]}"
-                            break
-                    
-                    spectral_data.append({
-                        'wavelengths': wavelengths,
-                        'reflectance': reflectance,
-                        'label': label,
-                        'color_index': len(spectral_data)
-                    })
-                    
-        except Exception as e:
-            print(f"Error processing local CSV: {e}")
-            return []
-            
-        return spectral_data
         
     def collect_organizations(self):
         """Collect unique organizations from current dataset"""
@@ -1496,175 +1615,7 @@ class EcosysAPICurator(wx.Frame):
             self.type_choice.SetStringSelection(current_selection)
         else:
             self.type_choice.SetSelection(0)  # "All"
-        """Load spectral data from local CSV file"""
-        try:
-            download_path = self.download_path.GetValue()
-            title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
-            filename = f"{title.replace(' ', '_').replace('/', '_')}.csv"
-            filepath = os.path.join(download_path, filename)
-            
-            if not os.path.exists(filepath):
-                return False
-                
-            # Read CSV file
-            import pandas as pd
-            df = pd.read_csv(filepath)
-            
-            # Process local CSV data into spectral format
-            spectral_data = self.process_local_csv_data(df, title)
-            
-            if spectral_data:
-                # Cache the local data
-                self.cached_spectral_data = spectral_data
-                
-                # Plot the cached data
-                self.plot_cached_spectral_data()
-                
-                self.SetStatusText(f"Loaded {len(spectral_data)} spectra from local file")
-                return True
-            else:
-                wx.MessageBox("No spectral data found in local file", "No Data", wx.OK | wx.ICON_WARNING)
-                return False
-                
-        except Exception as e:
-            wx.MessageBox(f"Error loading local data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
-            return False
-            
-    def process_local_csv_data(self, df, title):
-        """Process local CSV data into spectral format"""
-        spectral_data = []
         
-        try:
-            # Look for wavelength columns (numeric column names between 300-2500)
-            wavelength_cols = []
-            for col in df.columns:
-                try:
-                    wl = float(col)
-                    if 300 <= wl <= 2500:
-                        wavelength_cols.append(col)
-                except ValueError:
-                    continue
-                    
-            if not wavelength_cols:
-                return []
-                
-            wavelength_cols.sort(key=float)  # Sort by wavelength
-            
-            # Process up to 5 rows as different spectra
-            for idx, (_, row) in enumerate(df.head(5).iterrows()):
-                wavelengths = []
-                reflectance = []
-                
-                for wl_col in wavelength_cols:
-                    try:
-                        wl = float(wl_col)
-                        refl = float(row[wl_col])
-                        if not pd.isna(refl):
-                            wavelengths.append(wl)
-                            reflectance.append(refl)
-                    except (ValueError, TypeError):
-                        continue
-                        
-                if wavelengths and reflectance:
-                    # Create label from metadata columns
-                    label = f"Local S{idx+1}"
-                    
-                    # Try to get meaningful labels from non-wavelength columns
-                    for col in ['Scientific Name', 'Common Name', 'Sample ID', 'ID']:
-                        if col in df.columns and pd.notna(row.get(col)):
-                            label = f"S{idx+1}: {row[col]}"
-                            break
-                    
-                    spectral_data.append({
-                        'wavelengths': wavelengths,
-                        'reflectance': reflectance,
-                        'label': label,
-                        'color_index': len(spectral_data)
-                    })
-                    
-        except Exception as e:
-            print(f"Error processing local CSV: {e}")
-            return []
-            
-        return spectral_data
-        """Collect unique organizations from current dataset"""
-        for dataset in self.api_data:
-            ecosis_info = dataset.get('ecosis', {})
-            organization = ecosis_info.get('organization', [])
-            
-            if isinstance(organization, list):
-                for org in organization:
-                    if org and str(org).strip():
-                        self.all_organizations.add(str(org).strip())
-            elif isinstance(organization, str) and organization.strip():
-                self.all_organizations.add(organization.strip())
-    
-    def collect_themes(self):
-        """Collect unique themes from current dataset"""
-        for dataset in self.api_data:
-            theme_list = dataset.get('Theme', [])
-            if isinstance(theme_list, list):
-                for theme in theme_list:
-                    if theme and str(theme).strip():
-                        self.all_themes.add(str(theme).strip())
-            elif isinstance(theme_list, str) and theme_list.strip():
-                self.all_themes.add(theme_list.strip())
-                
-            # Also collect from Category field
-            category_list = dataset.get('Category', [])
-            if isinstance(category_list, list):
-                for category in category_list:
-                    if category and str(category).strip():
-                        self.all_themes.add(str(category).strip())
-            elif isinstance(category_list, str) and category_list.strip():
-                self.all_themes.add(category_list.strip())
-                
-    def update_theme_combobox(self):
-        """Update theme combobox with collected themes"""
-        # Get current selection
-        current_selection = self.type_choice.GetStringSelection()
-        
-        # Clear existing items
-        self.type_choice.Clear()
-        
-        # Add "All" option
-        self.type_choice.Append("All")
-        
-        # Add sorted themes
-        sorted_themes = sorted(list(self.all_themes))
-        for theme in sorted_themes:
-            self.type_choice.Append(theme)
-        
-        # Try to restore previous selection, otherwise set to "All"
-        if current_selection and current_selection in sorted_themes:
-            self.type_choice.SetStringSelection(current_selection)
-        else:
-            self.type_choice.SetSelection(0)  # "All"
-                
-    def update_organization_combobox(self):
-        """Update organization combobox with collected organizations"""
-        # Clear existing items
-        self.org_choice.Clear()
-        
-        # Add "All" option
-        self.org_choice.Append("All")
-        
-        # Add sorted organizations
-        sorted_orgs = sorted(list(self.all_organizations))
-        for org in sorted_orgs:
-            self.org_choice.Append(org)
-        
-        # Set to "All" by default
-        self.org_choice.SetSelection(0)
-        
-    def on_grid_select(self, event):
-        """Handle grid row selection"""
-        row = event.GetRow()
-        if 0 <= row < len(self.filtered_data):
-            self.current_selection = self.filtered_data[row]
-            self.update_metadata_display()
-            self.selection_info.SetLabel(f"Selected: {self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')}")
-            
     def update_metadata_display(self):
         """Update metadata display for selected EcoSIS dataset"""
         if not self.current_selection:
@@ -1716,21 +1667,10 @@ class EcosysAPICurator(wx.Frame):
         """Called when search timer expires - perform the actual search"""
         self.apply_local_filters()
     
-    def on_search(self, event):
-        """Handle immediate search (for other triggers)"""
-        # Use local filtering for instant results
-        self.apply_local_filters()
-        
     def on_filter_change(self, event):
         """Handle filter changes"""
         # Use local filtering for instant results
         self.apply_local_filters()
-        
-    def apply_filters(self):
-        """Apply current search and filter settings using API (for new data loads)"""
-        # This is used when loading new data from API with server-side filtering
-        self.current_page = 0
-        self.load_api_data()
         
     def apply_local_filters(self):
         """Apply current search and filter settings locally for instant results"""
@@ -1806,48 +1746,28 @@ class EcosysAPICurator(wx.Frame):
         wx.CallAfter(self.SetStatusText, f"Showing {len(self.filtered_data)} of {len(self.api_data)} datasets")
         
     def on_load_spectral(self, event):
-        """Load and display spectral data for selected dataset - WITH DEBUG"""
-        print("DEBUG: Load spectral button clicked")
-        
+        """Load and display spectral data for selected dataset"""
         if not self.current_selection:
-            print("DEBUG: No dataset selected")
             wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
             return
-        
-        dataset_title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
-        dataset_id = self.current_selection.get('_id', 'Unknown')
-        print(f"DEBUG: Loading spectral data for: {dataset_title}")
-        print(f"DEBUG: Dataset ID: {dataset_id}")
         
         self.load_spectral_data()
         
     def load_spectral_data(self):
-        """Load spectral data from local file if available, otherwise from EcoSIS API - WITH DEBUG"""
+        """Load spectral data from local file if available, otherwise from EcoSIS API"""
         if not self.current_selection:
-            print("DEBUG: No current selection in load_spectral_data")
             wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
             return
         
-        dataset_title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
-        print(f"DEBUG: load_spectral_data called for: {dataset_title}")
-        
         # Check if data is available locally first
         is_local = self.is_dataset_local(self.current_selection)
-        print(f"DEBUG: Dataset is local: {is_local}")
         
         if is_local:
-            print("DEBUG: Attempting to load from local file")
             success = self.load_spectral_data_local(self.current_selection)
-            print(f"DEBUG: Local loading success: {success}")
             if success:
                 return  # Successfully loaded from local file
-            else:
-                print("DEBUG: Local loading failed, will try API")
-        else:
-            print("DEBUG: Dataset not available locally, will try API")
             
         # Fallback to API if local loading failed or not available
-        print("DEBUG: Falling back to API loading")
         self.load_spectral_data_api()
         
     def load_spectral_data_api(self):
@@ -1946,6 +1866,9 @@ class EcosysAPICurator(wx.Frame):
         # Color palette for multiple spectra
         colors = plt.cm.tab10(np.linspace(0, 1, len(self.cached_spectral_data)))
         
+        # Track min/max values for dynamic axis scaling
+        all_reflectance_values = []
+        
         # Plot each cached spectrum
         for spectrum_data in self.cached_spectral_data:
             self.spectral_axes.plot(spectrum_data['wavelengths'], 
@@ -1954,6 +1877,9 @@ class EcosysAPICurator(wx.Frame):
                                   label=spectrum_data['label'], 
                                   alpha=0.8, 
                                   linewidth=1.5)
+            
+            # Collect all reflectance values for axis scaling
+            all_reflectance_values.extend(spectrum_data['reflectance'])
         
         # Update plot with dataset title
         dataset_title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
@@ -1961,7 +1887,23 @@ class EcosysAPICurator(wx.Frame):
         
         # Set reasonable axis limits
         self.spectral_axes.set_xlim(300, 2500)
-        self.spectral_axes.set_ylim(0, 1)
+        
+        # Dynamic Y-axis scaling based on actual data
+        if all_reflectance_values:
+            y_min = min(all_reflectance_values)
+            y_max = max(all_reflectance_values)
+            y_range = y_max - y_min
+            
+            # Add 5% padding above and below
+            padding = y_range * 0.05
+            self.spectral_axes.set_ylim(y_min - padding, y_max + padding)
+            
+            # Update y-axis label to show the units (percentage)
+            self.spectral_axes.set_ylabel("Reflectance (%)")
+        else:
+            # Fallback to 0-1 if no data
+            self.spectral_axes.set_ylim(0, 1)
+            self.spectral_axes.set_ylabel("Reflectance")
         
         # Configure legend
         if self.cached_spectral_data:
@@ -1976,13 +1918,10 @@ class EcosysAPICurator(wx.Frame):
         
         # Apply tight layout and draw
         self.spectral_figure.tight_layout()
-        self.spectral_canvas.draw()
+        self.spectral_canvas.draw()    
     
     def create_spectrum_label(self, spectrum, spectrum_num):
-        """Create a meaningful label for spectrum legend - WITH DEBUG"""
-        print(f"DEBUG: create_spectrum_label - Creating label for spectrum {spectrum_num}")
-        print(f"DEBUG: create_spectrum_label - Available spectrum keys: {list(spectrum.keys())[:10]}")  # Show first 10 keys
-        
+        """Create a meaningful label for spectrum legend"""
         # Priority order for creating informative labels
         label_parts = []
         
@@ -1993,7 +1932,6 @@ class EcosysAPICurator(wx.Frame):
                 label_parts.append(str(scientific_name[0]))
             elif isinstance(scientific_name, str):
                 label_parts.append(scientific_name)
-            print(f"DEBUG: create_spectrum_label - Found scientific name: {scientific_name}")
         
         # 2. Try common name if no scientific name
         if not label_parts:
@@ -2003,7 +1941,6 @@ class EcosysAPICurator(wx.Frame):
                     label_parts.append(str(common_name[0]))
                 elif isinstance(common_name, str):
                     label_parts.append(common_name)
-                print(f"DEBUG: create_spectrum_label - Found common name: {common_name}")
         
         # 3. Try sample ID or specimen ID
         if not label_parts:
@@ -2014,50 +1951,20 @@ class EcosysAPICurator(wx.Frame):
                         label_parts.append(f"ID: {sample_id[0]}")
                     elif isinstance(sample_id, str):
                         label_parts.append(f"ID: {sample_id}")
-                    print(f"DEBUG: create_spectrum_label - Found {field}: {sample_id}")
                     break
         
-        # 4. Try plot/site information
+        # Fallback to generic spectrum number
         if not label_parts:
-            for field in ['Plot', 'Site', 'Location', 'Target_Name']:
-                location = spectrum.get(field)
-                if location:
-                    if isinstance(location, list) and location:
-                        label_parts.append(f"{field}: {location[0]}")
-                    elif isinstance(location, str):
-                        label_parts.append(f"{field}: {location}")
-                    print(f"DEBUG: create_spectrum_label - Found {field}: {location}")
-                    break
-        
-        # 5. Try measurement date
-        if len(label_parts) < 2:
-            for field in ['Date', 'Measurement Date', 'Collection Date', 'Measurement_Year']:
-                date = spectrum.get(field)
-                if date:
-                    if isinstance(date, list) and date:
-                        label_parts.append(str(date[0]))
-                    elif isinstance(date, str):
-                        label_parts.append(date)
-                    print(f"DEBUG: create_spectrum_label - Found {field}: {date}")
-                    break
-        
-        # 6. Fallback to generic spectrum number
-        if not label_parts:
-            final_label = f"Spectrum {spectrum_num}"
-            print(f"DEBUG: create_spectrum_label - Using fallback label: {final_label}")
-            return final_label
+            return f"Spectrum {spectrum_num}"
         
         # Combine parts (limit to 2 parts for readability)
         label = " - ".join(label_parts[:2])
         
         # Add spectrum number if we have other info
         if label_parts:
-            final_label = f"S{spectrum_num}: {label}"
+            return f"S{spectrum_num}: {label}"
         else:
-            final_label = f"Spectrum {spectrum_num}"
-        
-        print(f"DEBUG: create_spectrum_label - Final label: {final_label}")
-        return final_label
+            return f"Spectrum {spectrum_num}"
             
     def on_calculate_indices(self, event):
         """Calculate vegetation indices for current spectral data"""
@@ -2134,28 +2041,6 @@ class EcosysAPICurator(wx.Frame):
             return abs(wavelength - target_wavelength) <= tolerance
         except ValueError:
             return False
-        
-    def on_load_photos(self, event):
-        """Load and display photos for selected dataset"""
-        if not self.current_selection:
-            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
-            return
-            
-        # Clear existing photos
-        self.photo_sizer.Clear(True)
-        
-        # Load photos from API or dataset
-        try:
-            # This would fetch photos from the API
-            # For now, show placeholder
-            placeholder = wx.StaticText(self.photo_panel, label="Photos not available or not yet implemented")
-            self.photo_sizer.Add(placeholder, 0, wx.ALL, 10)
-            
-        except Exception as e:
-            error_text = wx.StaticText(self.photo_panel, label=f"Error loading photos: {str(e)}")
-            self.photo_sizer.Add(error_text, 0, wx.ALL, 10)
-            
-        self.photo_panel.Layout()
         
     def on_add_download(self, event):
         """Add selected dataset to download queue"""
@@ -2394,4 +2279,6 @@ class EcosysApp(wx.App):
 
 if __name__ == '__main__':
     app = EcosysApp()
-    app.MainLoop()
+    app.MainLoop()ral_json_worker - Title: '{title}'")
+            print(f"DEBUG: download_spectral_json_worker - Clean title: '{clean_title}'")
+            print(f"DEBUG: download_spect
