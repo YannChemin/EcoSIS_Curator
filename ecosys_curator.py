@@ -89,7 +89,8 @@ class EcosysAPICurator(wx.Frame):
         tools_menu = wx.Menu()
         tools_menu.Append(201, "&Batch Download", "Download all selected datasets")
         tools_menu.Append(202, "&Export Metadata", "Export metadata to CSV")
-        tools_menu.Append(203, "&API Settings", "Configure API endpoints")
+        tools_menu.Append(203, "&Merge Local Spectra", "Merge all local spectra JSON files into one")
+        tools_menu.Append(204, "&API Settings", "Configure API endpoints")
         
         menubar.Append(file_menu, "&File")
         menubar.Append(view_menu, "&View")
@@ -101,7 +102,8 @@ class EcosysAPICurator(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_exit, id=wx.ID_EXIT)
         self.Bind(wx.EVT_MENU, self.on_refresh, id=101)
         self.Bind(wx.EVT_MENU, self.on_batch_download, id=201)
-        self.Bind(wx.EVT_MENU, self.on_api_settings, id=203)
+        self.Bind(wx.EVT_MENU, self.on_merge_local_spectra, id=203)
+        self.Bind(wx.EVT_MENU, self.on_api_settings, id=204)
         
     def create_api_panel(self):
         """Create API connection and search panel with integrated photo display"""
@@ -276,7 +278,6 @@ class EcosysAPICurator(wx.Frame):
         sizer = wx.BoxSizer(wx.VERTICAL)
         
         # Matplotlib figure for spectral curves with responsive sizing
-        # Start with a reasonable default size that will be adjusted
         self.spectral_figure = Figure(figsize=(6, 4), tight_layout=True, dpi=100)
         
         # Check for dark mode
@@ -1074,27 +1075,19 @@ class EcosysAPICurator(wx.Frame):
                 self.highlight_local_row(i)
         
     def check_local_data(self):
-        """Check which datasets' spectral JSON files are available locally - WITH DEBUG"""
+        """Check which datasets' spectral JSON files are available locally"""
         download_path = self.download_path.GetValue()
-        print(f"DEBUG: check_local_data - Scanning directory: {download_path}")
         
         if not os.path.exists(download_path):
-            print("DEBUG: check_local_data - Download directory does not exist")
             return
             
         self.local_datasets = set()  # Reset the set
         
         try:
-            files_found = []
             for filename in os.listdir(download_path):
                 if filename.startswith('spectra_') and filename.endswith('.json'):
-                    files_found.append(filename)
-                    
-                    # Extract dataset name from filename (remove spectra_ prefix and .json extension)
+                    # Extract dataset name from filename
                     dataset_name = filename[8:-5]  # Remove 'spectra_' and '.json'
-                    
-                    print(f"DEBUG: check_local_data - Found file: {filename}")
-                    print(f"DEBUG: check_local_data - Extracted name: {dataset_name}")
                     
                     # Store both the clean filename version and various title variations
                     self.local_datasets.add(dataset_name)
@@ -1105,36 +1098,25 @@ class EcosysAPICurator(wx.Frame):
                     
                     # Also store the original filename without extension for exact matching
                     self.local_datasets.add(filename[:-5])  # Remove just .json
-            
-            print(f"DEBUG: check_local_data - Found {len(files_found)} spectral JSON files")
-            print(f"DEBUG: check_local_data - Files: {files_found}")
-            print(f"DEBUG: check_local_data - Tracked dataset variations: {len(self.local_datasets)}")
-            
+                    
         except OSError as e:
-            print(f"DEBUG: check_local_data - Error scanning directory: {e}")
+            print(f"DEBUG: Error scanning directory: {e}")
         
     def on_grid_cell_click(self, event):
-        """Handle grid cell clicks, especially for checkbox column - WITH DEBUG"""
+        """Handle grid cell clicks, especially for checkbox column"""
         row = event.GetRow()
         col = event.GetCol()
-        
-        print(f"DEBUG: Grid cell clicked - Row: {row}, Col: {col}")
         
         if col == 0:  # Checkbox column
             if 0 <= row < len(self.filtered_data):
                 dataset = self.filtered_data[row]
                 current_value = self.data_grid.GetCellValue(row, col)
                 
-                print(f"DEBUG: Checkbox clicked - Current value: {current_value}")
-                print(f"DEBUG: Dataset title: {dataset.get('ecosis', {}).get('package_title', 'Unknown')}")
-                
                 if current_value == "1":
                     # Unchecking - user wants to remove local data (optional feature)
-                    print("DEBUG: Unchecking checkbox - no action taken")
                     pass  # For now, just allow unchecking
                 else:
                     # Checking - user wants to download
-                    print("DEBUG: Checking checkbox - initiating download")
                     self.download_single_dataset(dataset, row)
         else:
             # For other columns, handle normal selection
@@ -1142,12 +1124,8 @@ class EcosysAPICurator(wx.Frame):
                 dataset = self.filtered_data[row]
                 self.current_selection = dataset
                 
-                print(f"DEBUG: Selected dataset: {dataset.get('ecosis', {}).get('package_title', 'Unknown')}")
-                print(f"DEBUG: Dataset ID: {dataset.get('_id', 'Unknown')}")
-                
                 # Check if local data exists
                 is_local = self.is_dataset_local(dataset)
-                print(f"DEBUG: Is dataset local? {is_local}")
                 
                 self.update_metadata_display()
                 title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
@@ -1190,10 +1168,6 @@ class EcosysAPICurator(wx.Frame):
         else:
             wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
     
-    # ... [Continue with all remaining methods from the original file]
-    # [This includes all the spectral analysis, download management, and other functionality]
-    # [I'll include the key methods but truncate for space - the full implementation would include all original methods]
-    
     def download_single_dataset(self, dataset, row):
         """Download complete spectral data in JSON format when checkbox is clicked"""
         title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
@@ -1214,12 +1188,8 @@ class EcosysAPICurator(wx.Frame):
         
     def normalize_filename(self, title):
         """Normalize dataset title for consistent filename generation"""
-        print(f"DEBUG: normalize_filename - Input title: '{title}'")
-        
         # Replace problematic characters consistently
         clean_title = title.replace(' ', '_').replace('/', '_').replace('\\', '_')
-        
-        print(f"DEBUG: normalize_filename - Output title: '{clean_title}'")
         return clean_title
     
     def download_spectral_json_worker(self, dataset_id, title, row):
@@ -1233,9 +1203,6 @@ class EcosysAPICurator(wx.Frame):
             clean_title = self.normalize_filename(title)
             filename = f"spectra_{clean_title}.json"
             filepath = os.path.join(download_path, filename)
-            
-            print(f"DEBUG: download_spectral_json_worker - Filename: '{filename}'")
-            print(f"DEBUG: download_spectral_json_worker - Full path: '{filepath}'")
             
             # Download all spectra in blocks of 10
             all_spectra = []
@@ -1296,9 +1263,9 @@ class EcosysAPICurator(wx.Frame):
                 with open(filepath, 'w', encoding='utf-8') as f:
                     json.dump(complete_data, f, indent=2)
                 
-                print(f"DEBUG: download_spectral_json_worker - Saved {len(all_spectra)} spectra to {filepath}")
+                print(f"DEBUG: Saved {len(all_spectra)} spectra to {filepath}")
                 
-                # IMPORTANT: Update local datasets tracking immediately after successful download
+                # Update local datasets tracking immediately after successful download
                 wx.CallAfter(self.check_local_data)  # Refresh the local datasets list
                 
                 # Update UI
@@ -1316,19 +1283,14 @@ class EcosysAPICurator(wx.Frame):
             wx.CallAfter(self.SetStatusText, f"Download failed: {title}")
             
     def is_dataset_local(self, dataset):
-        """Check if a dataset's spectral JSON is available locally - FIXED VERSION"""
+        """Check if a dataset's spectral JSON is available locally"""
         if not dataset:
-            print("DEBUG: is_dataset_local - No dataset provided")
             return False
             
         download_path = self.download_path.GetValue()
         title = dataset.get('ecosis', {}).get('package_title', '')
         
-        print(f"DEBUG: is_dataset_local - Checking for: '{title}'")
-        print(f"DEBUG: is_dataset_local - Download path: {download_path}")
-        
         if not title:
-            print("DEBUG: is_dataset_local - No title found")
             return False
             
         # Use consistent filename normalization
@@ -1336,39 +1298,29 @@ class EcosysAPICurator(wx.Frame):
         filename = f"spectra_{clean_title}.json"
         filepath = os.path.join(download_path, filename)
         
-        print(f"DEBUG: is_dataset_local - Looking for file: {filepath}")
-        
         # Check what files actually exist
         try:
             existing_files = [f for f in os.listdir(download_path) if f.startswith('spectra_') and f.endswith('.json')]
-            print(f"DEBUG: is_dataset_local - Existing files: {existing_files}")
             
             # Check for exact match first
             if filename in existing_files:
-                print(f"DEBUG: is_dataset_local - Exact match found!")
                 file_size = os.path.getsize(filepath)
-                print(f"DEBUG: is_dataset_local - File size: {file_size} bytes")
                 return file_size > 100
             
             # Check for case variations or other close matches
             for existing_file in existing_files:
                 if existing_file.lower() == filename.lower():
-                    print(f"DEBUG: is_dataset_local - Case-insensitive match found: {existing_file}")
                     alt_filepath = os.path.join(download_path, existing_file)
                     file_size = os.path.getsize(alt_filepath)
-                    print(f"DEBUG: is_dataset_local - File size: {file_size} bytes")
                     return file_size > 100
                     
         except OSError as e:
-            print(f"DEBUG: is_dataset_local - Error listing directory: {e}")
+            print(f"DEBUG: Error listing directory: {e}")
         
-        print(f"DEBUG: is_dataset_local - No matching file found")
         return False
         
     def load_spectral_data_local(self, dataset):
-        """Load spectral data from local JSON file - FIXED VERSION"""
-        print("DEBUG: load_spectral_data_local - METHOD CALLED!")
-        
+        """Load spectral data from local JSON file"""
         try:
             download_path = self.download_path.GetValue()
             title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
@@ -1378,91 +1330,62 @@ class EcosysAPICurator(wx.Frame):
             filename = f"spectra_{clean_title}.json"
             filepath = os.path.join(download_path, filename)
             
-            print(f"DEBUG: load_spectral_data_local - Title: '{title}'")
-            print(f"DEBUG: load_spectral_data_local - Full path: '{filepath}'")
-            
             # List existing files for debugging and find actual file
             actual_filepath = None
             try:
                 existing_files = [f for f in os.listdir(download_path) if f.startswith('spectra_') and f.endswith('.json')]
-                print(f"DEBUG: load_spectral_data_local - Existing files: {existing_files}")
                 
                 # Try exact match first
                 if filename in existing_files:
                     actual_filepath = filepath
-                    print(f"DEBUG: load_spectral_data_local - Exact match found")
                 else:
                     # Try case-insensitive match
                     for existing_file in existing_files:
                         if existing_file.lower() == filename.lower():
                             actual_filepath = os.path.join(download_path, existing_file)
-                            print(f"DEBUG: load_spectral_data_local - Case-insensitive match found: {existing_file}")
                             break
                             
             except OSError as e:
-                print(f"DEBUG: load_spectral_data_local - Error listing directory: {e}")
+                print(f"DEBUG: Error listing directory: {e}")
             
             if not actual_filepath or not os.path.exists(actual_filepath):
-                print(f"DEBUG: load_spectral_data_local - File does not exist")
                 return False
                 
-            print(f"DEBUG: load_spectral_data_local - Using file: {actual_filepath}")
-            
             # Check file size first
             file_size = os.path.getsize(actual_filepath)
-            print(f"DEBUG: load_spectral_data_local - File size: {file_size} bytes")
             
             if file_size < 100:
-                print("DEBUG: load_spectral_data_local - File appears to be empty or too small")
                 return False
                 
             # Read JSON file
-            print("DEBUG: load_spectral_data_local - About to read JSON file...")
             with open(actual_filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            print(f"DEBUG: load_spectral_data_local - JSON loaded successfully")
-            
             # Process local JSON data into spectral format
-            print("DEBUG: load_spectral_data_local - About to process JSON data...")
             spectral_data = self.process_local_json_data(data, title)
             
-            print(f"DEBUG: load_spectral_data_local - Processed {len(spectral_data)} spectra")
-            
             if spectral_data:
-                print("DEBUG: load_spectral_data_local - Spectral data found, caching and plotting...")
-                
                 # Cache the local data
                 self.cached_spectral_data = spectral_data
                 
                 # Plot the cached data
-                print("DEBUG: load_spectral_data_local - About to plot cached data...")
                 self.plot_cached_spectral_data()
                 
                 total_spectra = data.get('dataset_info', {}).get('total_spectra', len(spectral_data))
                 status_msg = f"Loaded {len(spectral_data)} of {total_spectra} spectra from local file"
-                print(f"DEBUG: load_spectral_data_local - Setting status: {status_msg}")
                 self.SetStatusText(status_msg)
-                print(f"DEBUG: load_spectral_data_local - Successfully loaded and plotted data")
                 return True
             else:
-                print("DEBUG: load_spectral_data_local - No spectral data found after processing")
                 wx.MessageBox("No spectral data found in local file", "No Data", wx.OK | wx.ICON_WARNING)
                 return False
                 
         except json.JSONDecodeError as e:
-            print(f"DEBUG: load_spectral_data_local - JSON decode error: {str(e)}")
             wx.MessageBox(f"Invalid JSON file: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
             return False
         except FileNotFoundError as e:
-            print(f"DEBUG: load_spectral_data_local - File not found: {str(e)}")
             wx.MessageBox(f"File not found: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
             return False
         except Exception as e:
-            print(f"DEBUG: load_spectral_data_local - Exception occurred: {str(e)}")
-            import traceback
-            print(f"DEBUG: load_spectral_data_local - Full traceback:")
-            traceback.print_exc()
             wx.MessageBox(f"Error loading local data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
             return False
             
@@ -2202,6 +2125,139 @@ class EcosysAPICurator(wx.Frame):
             self.download_list.SetItem(index, 1, "Queued")
             self.download_list.SetItem(index, 2, "0%")
             self.download_list.SetItem(index, 3, "Unknown")
+    
+    def on_merge_local_spectra(self, event):
+        """Merge all local spectra JSON files into one consolidated file"""
+        download_path = self.download_path.GetValue()
+        
+        # Check if download directory exists
+        if not os.path.exists(download_path):
+            wx.MessageBox("Download directory does not exist", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        # Find all local spectra JSON files
+        spectra_files = []
+        try:
+            for filename in os.listdir(download_path):
+                if filename.startswith('spectra_') and filename.endswith('.json'):
+                    filepath = os.path.join(download_path, filename)
+                    if os.path.getsize(filepath) > 100:  # Only include non-empty files
+                        spectra_files.append(filepath)
+        except OSError as e:
+            wx.MessageBox(f"Error scanning download directory: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        if not spectra_files:
+            wx.MessageBox("No local spectra JSON files found to merge", "No Files", wx.OK | wx.ICON_WARNING)
+            return
+        
+        # Ask user for output filename
+        dlg = wx.FileDialog(self, "Save merged spectra as...",
+                           defaultFile="merged_spectra.json",
+                           wildcard="JSON files (*.json)|*.json",
+                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+        
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        
+        output_filepath = dlg.GetPath()
+        dlg.Destroy()
+        
+        # Show progress dialog
+        progress_dlg = wx.ProgressDialog("Merging Spectra Files",
+                                       "Merging local spectra JSON files...",
+                                       maximum=len(spectra_files),
+                                       parent=self,
+                                       style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT)
+        
+        try:
+            merged_data = {
+                'merge_info': {
+                    'created_date': datetime.now().isoformat(),
+                    'source_files': len(spectra_files),
+                    'total_datasets': 0,
+                    'total_spectra': 0,
+                    'source': 'EcoSIS API Curator - Local Files Merger'
+                },
+                'datasets': []
+            }
+            
+            total_spectra = 0
+            successful_files = 0
+            
+            for i, filepath in enumerate(spectra_files):
+                if not progress_dlg.Update(i, f"Processing {os.path.basename(filepath)}...")[0]:
+                    # User cancelled
+                    progress_dlg.Destroy()
+                    return
+                
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # Extract dataset info
+                    dataset_info = data.get('dataset_info', {})
+                    spectra = data.get('spectra', [])
+                    
+                    if spectra:  # Only include datasets with spectra
+                        dataset_entry = {
+                            'source_file': os.path.basename(filepath),
+                            'dataset_info': dataset_info,
+                            'spectra_count': len(spectra),
+                            'spectra': spectra
+                        }
+                        
+                        merged_data['datasets'].append(dataset_entry)
+                        total_spectra += len(spectra)
+                        successful_files += 1
+                        
+                        print(f"DEBUG: Merged {len(spectra)} spectra from {os.path.basename(filepath)}")
+                    else:
+                        print(f"DEBUG: Skipping {os.path.basename(filepath)} - no spectra found")
+                
+                except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+                    print(f"DEBUG: Error processing {filepath}: {str(e)}")
+                    continue  # Skip problematic files
+                except Exception as e:
+                    print(f"DEBUG: Unexpected error processing {filepath}: {str(e)}")
+                    continue
+            
+            # Update merge info
+            merged_data['merge_info']['total_datasets'] = len(merged_data['datasets'])
+            merged_data['merge_info']['total_spectra'] = total_spectra
+            merged_data['merge_info']['successful_files'] = successful_files
+            merged_data['merge_info']['failed_files'] = len(spectra_files) - successful_files
+            
+            # Save merged file
+            progress_dlg.Update(len(spectra_files), "Saving merged file...")
+            
+            with open(output_filepath, 'w', encoding='utf-8') as f:
+                json.dump(merged_data, f, indent=2)
+            
+            progress_dlg.Destroy()
+            
+            # Show success message with statistics
+            success_msg = (f"Successfully merged spectral data:\n\n"
+                          f"• Source files processed: {successful_files} of {len(spectra_files)}\n"
+                          f"• Total datasets: {len(merged_data['datasets'])}\n"
+                          f"• Total spectra: {total_spectra:,}\n"
+                          f"• Output file: {os.path.basename(output_filepath)}\n"
+                          f"• File size: {os.path.getsize(output_filepath) / (1024*1024):.1f} MB")
+            
+            if successful_files < len(spectra_files):
+                success_msg += f"\n\nNote: {len(spectra_files) - successful_files} files were skipped due to errors or missing data."
+            
+            wx.MessageBox(success_msg, "Merge Complete", wx.OK | wx.ICON_INFORMATION)
+            
+            self.SetStatusText(f"Merged {len(merged_data['datasets'])} datasets with {total_spectra:,} spectra")
+            
+        except Exception as e:
+            progress_dlg.Destroy()
+            wx.MessageBox(f"Error during merge operation: {str(e)}", "Merge Error", wx.OK | wx.ICON_ERROR)
+            print(f"DEBUG: Merge operation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             
     def on_api_settings(self, event):
         """Show API settings dialog"""
@@ -2279,6 +2335,4 @@ class EcosysApp(wx.App):
 
 if __name__ == '__main__':
     app = EcosysApp()
-    app.MainLoop()ral_json_worker - Title: '{title}'")
-            print(f"DEBUG: download_spectral_json_worker - Clean title: '{clean_title}'")
-            print(f"DEBUG: download_spect
+    app.MainLoop()
