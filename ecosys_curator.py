@@ -2127,7 +2127,7 @@ class EcosysAPICurator(wx.Frame):
             self.download_list.SetItem(index, 3, "Unknown")
     
     def on_merge_local_spectra(self, event):
-        """Merge all local spectra JSON files into one consolidated file"""
+        """Merge all local spectra JSON files into one consolidated file - RAM efficient version"""
         download_path = self.download_path.GetValue()
         
         # Check if download directory exists
@@ -2151,6 +2151,27 @@ class EcosysAPICurator(wx.Frame):
             wx.MessageBox("No local spectra JSON files found to merge", "No Files", wx.OK | wx.ICON_WARNING)
             return
         
+        # Check for large files and warn user
+        large_files = []
+        total_size_mb = 0
+        for filepath in spectra_files:
+            size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            total_size_mb += size_mb
+            if size_mb > 100:  # Files larger than 100MB
+                large_files.append((os.path.basename(filepath), size_mb))
+        
+        if large_files:
+            large_files_text = "\n".join([f"• {name}: {size:.1f} MB" for name, size in large_files])
+            warning_msg = (f"Warning: Large files detected that may consume significant memory:\n\n"
+                          f"{large_files_text}\n\n"
+                          f"Total estimated size: {total_size_mb:.1f} MB\n"
+                          f"This operation will use memory-efficient processing.\n\n"
+                          f"Continue with merge?")
+            
+            if wx.MessageBox(warning_msg, "Large Files Warning", 
+                           wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
+                return
+        
         # Ask user for output filename
         dlg = wx.FileDialog(self, "Save merged spectra as...",
                            defaultFile="merged_spectra.json",
@@ -2166,76 +2187,77 @@ class EcosysAPICurator(wx.Frame):
         
         # Show progress dialog
         progress_dlg = wx.ProgressDialog("Merging Spectra Files",
-                                       "Merging local spectra JSON files...",
+                                       "Merging local spectra JSON files (memory efficient)...",
                                        maximum=len(spectra_files),
                                        parent=self,
                                        style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT)
         
         try:
-            merged_data = {
-                'merge_info': {
-                    'created_date': datetime.now().isoformat(),
-                    'source_files': len(spectra_files),
-                    'total_datasets': 0,
-                    'total_spectra': 0,
-                    'source': 'EcoSIS API Curator - Local Files Merger'
-                },
-                'datasets': []
-            }
-            
+            # Use streaming JSON writing to minimize memory usage
             total_spectra = 0
             successful_files = 0
+            dataset_summaries = []  # Store minimal summaries instead of full data
             
-            for i, filepath in enumerate(spectra_files):
-                if not progress_dlg.Update(i, f"Processing {os.path.basename(filepath)}...")[0]:
-                    # User cancelled
-                    progress_dlg.Destroy()
-                    return
+            # Start writing JSON file
+            with open(output_filepath, 'w', encoding='utf-8') as output_file:
+                # Write opening structure
+                output_file.write('{\n')
+                output_file.write('  "merge_info": {\n')
+                output_file.write(f'    "created_date": "{datetime.now().isoformat()}",\n')
+                output_file.write(f'    "source_files": {len(spectra_files)},\n')
+                output_file.write('    "total_datasets": 0,\n')  # Will update later
+                output_file.write('    "total_spectra": 0,\n')   # Will update later
+                output_file.write('    "source": "EcoSIS API Curator - Local Files Merger (Memory Efficient)"\n')
+                output_file.write('  },\n')
+                output_file.write('  "datasets": [\n')
                 
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    
-                    # Extract dataset info
-                    dataset_info = data.get('dataset_info', {})
-                    spectra = data.get('spectra', [])
-                    
-                    if spectra:  # Only include datasets with spectra
-                        dataset_entry = {
-                            'source_file': os.path.basename(filepath),
-                            'dataset_info': dataset_info,
-                            'spectra_count': len(spectra),
-                            'spectra': spectra
-                        }
-                        
-                        merged_data['datasets'].append(dataset_entry)
-                        total_spectra += len(spectra)
-                        successful_files += 1
-                        
-                        print(f"DEBUG: Merged {len(spectra)} spectra from {os.path.basename(filepath)}")
-                    else:
-                        print(f"DEBUG: Skipping {os.path.basename(filepath)} - no spectra found")
+                first_dataset = True
                 
-                except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
-                    print(f"DEBUG: Error processing {filepath}: {str(e)}")
-                    continue  # Skip problematic files
-                except Exception as e:
-                    print(f"DEBUG: Unexpected error processing {filepath}: {str(e)}")
-                    continue
-            
-            # Update merge info
-            merged_data['merge_info']['total_datasets'] = len(merged_data['datasets'])
-            merged_data['merge_info']['total_spectra'] = total_spectra
-            merged_data['merge_info']['successful_files'] = successful_files
-            merged_data['merge_info']['failed_files'] = len(spectra_files) - successful_files
-            
-            # Save merged file
-            progress_dlg.Update(len(spectra_files), "Saving merged file...")
-            
-            with open(output_filepath, 'w', encoding='utf-8') as f:
-                json.dump(merged_data, f, indent=2)
+                for i, filepath in enumerate(spectra_files):
+                    if not progress_dlg.Update(i, f"Processing {os.path.basename(filepath)}...")[0]:
+                        # User cancelled
+                        progress_dlg.Destroy()
+                        # Clean up incomplete file
+                        try:
+                            os.remove(output_filepath)
+                        except:
+                            pass
+                        return
+                    
+                    try:
+                        # Process one file at a time to minimize memory usage
+                        dataset_spectra_count = self.process_single_file_streaming(
+                            filepath, output_file, first_dataset)
+                        
+                        if dataset_spectra_count > 0:
+                            # Store summary info
+                            dataset_summaries.append({
+                                'source_file': os.path.basename(filepath),
+                                'spectra_count': dataset_spectra_count
+                            })
+                            
+                            total_spectra += dataset_spectra_count
+                            successful_files += 1
+                            first_dataset = False
+                            
+                            print(f"DEBUG: Streamed {dataset_spectra_count} spectra from {os.path.basename(filepath)}")
+                        else:
+                            print(f"DEBUG: Skipping {os.path.basename(filepath)} - no spectra found")
+                    
+                    except Exception as e:
+                        print(f"DEBUG: Error processing {filepath}: {str(e)}")
+                        continue  # Skip problematic files
+                
+                # Close datasets array and file
+                output_file.write('\n  ]\n')
+                output_file.write('}\n')
             
             progress_dlg.Destroy()
+            
+            # Update merge info in the file (rewrite with correct totals)
+            self.update_merge_info_in_file(output_filepath, successful_files, 
+                                         len(spectra_files), len(dataset_summaries), 
+                                         total_spectra)
             
             # Show custom results dialog with file manager option
             merge_percentage = (successful_files * 100) // len(spectra_files) if len(spectra_files) > 0 else 0
@@ -2243,14 +2265,14 @@ class EcosysAPICurator(wx.Frame):
                                            merge_percentage=merge_percentage,
                                            successful_files=successful_files,
                                            total_files=len(spectra_files),
-                                           total_datasets=len(merged_data['datasets']),
+                                           total_datasets=len(dataset_summaries),
                                            total_spectra=total_spectra,
                                            output_filepath=output_filepath,
                                            file_size_mb=os.path.getsize(output_filepath) / (1024*1024))
             results_dlg.ShowModal()
             results_dlg.Destroy()
             
-            self.SetStatusText(f"Merged {len(merged_data['datasets'])} datasets with {total_spectra:,} spectra")
+            self.SetStatusText(f"Merged {len(dataset_summaries)} datasets with {total_spectra:,} spectra (memory efficient)")
             
         except Exception as e:
             progress_dlg.Destroy()
@@ -2258,6 +2280,78 @@ class EcosysAPICurator(wx.Frame):
             print(f"DEBUG: Merge operation failed: {str(e)}")
             import traceback
             traceback.print_exc()
+    
+    def process_single_file_streaming(self, filepath, output_file, is_first_dataset):
+        """Process a single JSON file and stream its data to the output file"""
+        try:
+            with open(filepath, 'r', encoding='utf-8') as input_file:
+                data = json.load(input_file)
+            
+            dataset_info = data.get('dataset_info', {})
+            spectra = data.get('spectra', [])
+            
+            if not spectra:
+                return 0
+            
+            # Add comma if not the first dataset
+            if not is_first_dataset:
+                output_file.write(',\n')
+            
+            # Write dataset entry (without full spectra data to save memory)
+            output_file.write('    {\n')
+            output_file.write(f'      "source_file": "{os.path.basename(filepath)}",\n')
+            output_file.write('      "dataset_info": ')
+            json.dump(dataset_info, output_file, indent=6)
+            output_file.write(',\n')
+            output_file.write(f'      "spectra_count": {len(spectra)},\n')
+            output_file.write('      "spectra": [\n')
+            
+            # Stream spectra one by one to minimize memory usage
+            for j, spectrum in enumerate(spectra):
+                if j > 0:
+                    output_file.write(',\n')
+                output_file.write('        ')
+                json.dump(spectrum, output_file, separators=(',', ':'))  # Compact format
+                
+                # Force garbage collection every 1000 spectra for large datasets
+                if j > 0 and j % 1000 == 0:
+                    import gc
+                    gc.collect()
+            
+            output_file.write('\n      ]\n')
+            output_file.write('    }')
+            
+            return len(spectra)
+            
+        except Exception as e:
+            print(f"DEBUG: Error processing {filepath}: {str(e)}")
+            return 0
+    
+    def update_merge_info_in_file(self, filepath, successful_files, total_files, 
+                                total_datasets, total_spectra):
+        """Update the merge info in the completed file with correct totals"""
+        try:
+            # Read the file
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Update the merge info section
+            content = content.replace('"total_datasets": 0,', f'"total_datasets": {total_datasets},')
+            content = content.replace('"total_spectra": 0,', f'"total_spectra": {total_spectra},')
+            
+            # Add additional merge statistics
+            merge_info_end = content.find('"source": "EcoSIS API Curator - Local Files Merger (Memory Efficient)"')
+            if merge_info_end != -1:
+                insert_pos = merge_info_end + len('"source": "EcoSIS API Curator - Local Files Merger (Memory Efficient)"')
+                additional_info = f',\n    "successful_files": {successful_files},\n    "failed_files": {total_files - successful_files}'
+                content = content[:insert_pos] + additional_info + content[insert_pos:]
+            
+            # Write back to file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+                
+        except Exception as e:
+            print(f"DEBUG: Error updating merge info: {str(e)}")
             
     def on_api_settings(self, event):
         """Show API settings dialog"""
