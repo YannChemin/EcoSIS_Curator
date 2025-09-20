@@ -26,31 +26,7 @@ import base64
 from urllib.parse import urlparse, urljoin
 
 class EcosysAPICurator(wx.Frame):
-    """
-    Main application frame for EcoSIS API Data Curator.
-    
-    This class provides a comprehensive GUI for interacting with the EcoSIS spectral database API,
-    allowing users to search, browse, download, and analyze spectral datasets with integrated
-    photo viewing and vegetation index calculations.
-    
-    Key Features:
-    - API connection to EcoSIS production and development servers
-    - Dataset search and filtering capabilities
-    - Spectral data visualization with matplotlib integration
-    - Local data caching and management
-    - Photo extraction and display from dataset metadata
-    - Vegetation index calculations
-    - Batch download functionality
-    """
-    
     def __init__(self):
-        """
-        Initialize the main application frame.
-        
-        Sets up the GUI components, initializes data structures, and configures
-        the API connection settings. Creates all panels, menus, and establishes
-        the layout using either AUI manager or basic sizers.
-        """
         super().__init__(None, title="EcoSIS API Data Curator", size=(1400, 900))
         
         # Initialize variables
@@ -64,13 +40,7 @@ class EcosysAPICurator(wx.Frame):
         self.setup_api_config()
         
     def init_ui(self):
-        """
-        Initialize the complete user interface.
-        
-        Creates all GUI panels, sets up the AUI manager if available,
-        establishes the layout structure, and creates the status bar.
-        Falls back to basic sizer layout if AUI is not available.
-        """
+        """Initialize the user interface with AUI manager or basic layout"""
         if aui:
             self._mgr = aui.AuiManager(self)
         else:
@@ -100,13 +70,7 @@ class EcosysAPICurator(wx.Frame):
             self._mgr.Update()
         
     def create_menu_bar(self):
-        """
-        Create and configure the application menu bar.
-        
-        Sets up File, View, and Tools menus with appropriate menu items,
-        accelerator keys, and event bindings. Includes standard application
-        functions like file operations, view controls, and tool access.
-        """
+        """Create menu bar with file, view, and tools menus"""
         menubar = wx.MenuBar()
         
         # File menu
@@ -142,14 +106,7 @@ class EcosysAPICurator(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_api_settings, id=204)
         
     def create_api_panel(self):
-        """
-        Create the API connection and search control panel.
-        
-        Builds the left panel containing API configuration controls, search
-        and filter options, data loading progress indicators, and integrated
-        photo display area. Includes environment selection, URL configuration,
-        theme and organization filters, and date range filtering.
-        """
+        """Create API connection and search panel with integrated photo display"""
         self.api_panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -275,14 +232,7 @@ class EcosysAPICurator(wx.Frame):
         self.api_panel.SetSizer(sizer)
         
     def create_data_grid(self):
-        """
-        Create the main data grid for displaying dataset search results.
-        
-        Builds a wx.grid.Grid with columns for dataset information including
-        download checkboxes, ID, title, organization, spectra count, keywords,
-        theme, and status. Configures column sizes, cell attributes for
-        checkboxes, and event bindings for selection and interaction.
-        """
+        """Create main data grid for displaying API results"""
         self.data_panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -323,15 +273,7 @@ class EcosysAPICurator(wx.Frame):
         self.data_panel.SetSizer(sizer)
         
     def create_spectral_panel(self):
-        """
-        Create the spectral data analysis and visualization panel.
-        
-        Sets up a matplotlib figure embedded in a wx panel for displaying
-        spectral reflectance curves. Includes controls for loading spectral
-        data, exporting plots, and calculating vegetation indices. Configures
-        the plot for both light and dark mode compatibility with responsive
-        resizing capabilities.
-        """
+        """Create spectral analysis and visualization panel"""
         self.spectral_panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -378,13 +320,7 @@ class EcosysAPICurator(wx.Frame):
         self.spectral_panel.Bind(wx.EVT_SIZE, self.on_spectral_panel_resize)
         
     def configure_spectral_plot(self):
-        """
-        Configure the appearance and styling of the spectral plot.
-        
-        Sets up plot colors, labels, grid, and styling to be compatible
-        with both light and dark system themes. Configures axis labels,
-        title, and grid appearance with appropriate contrast for readability.
-        """
+        """Configure spectral plot appearance"""
         # Check for dark mode and configure accordingly
         if wx.SystemSettings.GetAppearance().IsDark():
             # Dark mode colors
@@ -404,13 +340,7 @@ class EcosysAPICurator(wx.Frame):
         self.spectral_axes.grid(True, alpha=0.3)
         
     def initialize_spectral_plot(self):
-        """
-        Initialize the spectral plot with placeholder content.
-        
-        Creates a simple placeholder plot with typical spectral data shape
-        to establish proper plot dimensions and layout. Uses delayed
-        execution to ensure proper sizing after window construction is complete.
-        """
+        """Initialize spectral plot with placeholder content and proper sizing"""
         # Create a simple placeholder plot to establish dimensions
         wavelengths = [400, 500, 600, 700, 800, 900]
         placeholder = [0.1, 0.2, 0.15, 0.3, 0.6, 0.4]
@@ -427,13 +357,7 @@ class EcosysAPICurator(wx.Frame):
         wx.CallAfter(self.initial_plot_resize)
         
     def initial_plot_resize(self):
-        """
-        Perform initial plot resize after window construction is complete.
-        
-        Ensures the matplotlib figure is properly sized to match the canvas
-        dimensions after the window has been fully constructed. Includes
-        error handling for cases where sizing information is not yet available.
-        """
+        """Perform initial plot resize after window construction"""
         if hasattr(self, 'spectral_canvas'):
             # Get the actual canvas size
             canvas_size = self.spectral_canvas.GetSize()
@@ -453,15 +377,7 @@ class EcosysAPICurator(wx.Frame):
                 wx.CallAfter(self.initial_plot_resize)
         
     def on_spectral_panel_resize(self, event):
-        """
-        Handle spectral panel resize events with timer-based throttling.
-        
-        Args:
-            event: wx.Event - The resize event object
-            
-        Uses a timer to prevent excessive redraws during window resizing,
-        only redrawing the plot after the user has stopped resizing for 150ms.
-        """
+        """Handle spectral panel resize events with timer to avoid excessive redraws"""
         # Stop previous timer if running
         if hasattr(self, 'resize_timer') and self.resize_timer.IsRunning():
             self.resize_timer.Stop()
@@ -472,25 +388,11 @@ class EcosysAPICurator(wx.Frame):
         event.Skip()
         
     def on_resize_timer(self, event):
-        """
-        Timer callback for plot resize operations.
-        
-        Args:
-            event: wx.TimerEvent - The timer event object
-            
-        Called when the resize timer expires, performing the actual plot
-        resize operation to maintain proper plot proportions and readability.
-        """
+        """Called when resize timer expires - perform the actual plot resize"""
         self.refresh_spectral_plot()
         
     def refresh_spectral_plot(self):
-        """
-        Refresh the spectral plot with current canvas dimensions.
-        
-        Updates the matplotlib figure size to match the current canvas size
-        and redraws the plot using cached spectral data if available. Provides
-        efficient replotting without reprocessing data during resize operations.
-        """
+        """Refresh spectral plot with current dimensions using cached data"""
         if hasattr(self, 'spectral_figure') and hasattr(self, 'spectral_canvas'):
             # Get current canvas size
             canvas_size = self.spectral_canvas.GetSize()
@@ -512,13 +414,7 @@ class EcosysAPICurator(wx.Frame):
                     self.spectral_canvas.draw()
         
     def create_metadata_panel(self):
-        """
-        Create the metadata display panel for selected datasets.
-        
-        Sets up a simple text control for displaying comprehensive metadata
-        information about the currently selected dataset. Uses a monospace
-        font for better formatting of structured metadata content.
-        """
+        """Create simplified metadata display panel (no tabs, just text)"""
         self.metadata_panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -530,13 +426,7 @@ class EcosysAPICurator(wx.Frame):
         self.metadata_panel.SetSizer(sizer)
         
     def create_download_panel(self):
-        """
-        Create the download management panel for batch operations.
-        
-        Sets up the download queue list control, progress tracking, and
-        control buttons for managing batch downloads. Includes download
-        path configuration and progress monitoring capabilities.
-        """
+        """Create download management panel"""
         self.download_panel = wx.Panel(self)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -594,13 +484,7 @@ class EcosysAPICurator(wx.Frame):
         self.download_panel.SetSizer(sizer)
         
     def setup_basic_layout(self):
-        """
-        Set up basic sizer-based layout when AUI is not available.
-        
-        Creates a fallback layout using traditional wx sizers, organizing
-        panels in a hierarchical structure with the API panel on the left,
-        data grid in the center, and analysis panels at the bottom.
-        """
+        """Setup basic sizer layout when AUI is not available"""
         main_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
         # Left panel for API controls and photos
@@ -625,13 +509,7 @@ class EcosysAPICurator(wx.Frame):
         self.SetSizer(main_sizer)
         
     def setup_aui_panes(self):
-        """
-        Configure Advanced User Interface (AUI) pane layout.
-        
-        Sets up dockable panes using wx.lib.agw.aui for a professional
-        IDE-like interface with resizable, movable panels. Defines pane
-        positions, sizes, captions, and docking behaviors.
-        """
+        """Setup AUI pane layout"""
         if not self._mgr:
             return
             
@@ -670,13 +548,7 @@ class EcosysAPICurator(wx.Frame):
                          BestSize((-1, 200)))
         
     def setup_api_config(self):
-        """
-        Initialize API configuration and application state.
-        
-        Sets default API URLs, loads saved configuration from file,
-        initializes data structures, sets up timers for responsive
-        UI behavior, and checks for existing local data files.
-        """
+        """Setup default API configuration"""
         # Set default EcoSIS API URL
         self.url_text.SetValue("https://ecosis.org")
         
@@ -714,19 +586,7 @@ class EcosysAPICurator(wx.Frame):
         self.check_local_data()
         
     def extract_photos_from_dataset(self, dataset):
-        """
-        Extract photo URLs from dataset metadata.
-        
-        Args:
-            dataset (dict): Dataset metadata dictionary from EcoSIS API
-            
-        Returns:
-            list: List of photo information dictionaries containing URL, title, and source
-            
-        Searches dataset metadata for photo URLs in various common field names,
-        validates URLs, and stores photo information for display. Handles both
-        string URLs and lists of URLs from different metadata fields.
-        """
+        """Extract photo URLs from dataset metadata"""
         photos = []
         dataset_id = dataset.get('_id', '')
         
@@ -780,19 +640,7 @@ class EcosysAPICurator(wx.Frame):
         return photos
         
     def is_valid_image_url(self, url):
-        """
-        Validate whether a URL appears to be a valid image URL.
-        
-        Args:
-            url (str): URL string to validate
-            
-        Returns:
-            bool: True if URL appears to be a valid image URL, False otherwise
-            
-        Checks for proper URL format, common image file extensions,
-        and image-related keywords in the URL path to determine
-        if a URL is likely to point to an image file.
-        """
+        """Check if URL appears to be a valid image URL"""
         if not isinstance(url, str) or not url.strip():
             return False
             
@@ -819,17 +667,7 @@ class EcosysAPICurator(wx.Frame):
         return False
         
     def download_photos_for_dataset(self, dataset):
-        """
-        Download photos for a dataset in a background thread.
-        
-        Args:
-            dataset (dict): Dataset metadata dictionary
-            
-        Creates a download directory for the dataset and downloads all
-        associated photos in the background. Determines file extensions
-        from HTTP headers or URL analysis, and updates photo metadata
-        with local file paths after successful downloads.
-        """
+        """Download photos for a dataset in background thread"""
         dataset_id = dataset.get('_id', '')
         if dataset_id not in self.dataset_photos:
             return
@@ -880,17 +718,7 @@ class EcosysAPICurator(wx.Frame):
         download_thread.start()
         
     def display_photos_for_dataset(self, dataset):
-        """
-        Display photos for the currently selected dataset.
-        
-        Args:
-            dataset (dict): Selected dataset metadata dictionary
-            
-        Updates the photo display panel to show all available photos
-        for the selected dataset. Displays local images if available,
-        otherwise shows URL links with browser opening functionality.
-        Includes proper error handling and fallbacks for image loading.
-        """
+        """Display photos for the selected dataset"""
         if not dataset:
             return
             
@@ -976,28 +804,14 @@ class EcosysAPICurator(wx.Frame):
         self.photo_scroll.Layout()
         
     def on_open_photo_url(self, event):
-        """
-        Open photo URL in the default web browser.
-        
-        Args:
-            event: wx.Event - Button click event object
-            
-        Retrieves the photo URL stored in the button object and opens
-        it in the system's default web browser using the webbrowser module.
-        """
+        """Open photo URL in web browser"""
         btn = event.GetEventObject()
         if hasattr(btn, 'photo_url'):
             import webbrowser
             webbrowser.open(btn.photo_url)
             
     def save_config(self):
-        """
-        Save current application configuration to JSON file.
-        
-        Saves API configuration including base URL, download path,
-        and environment selection to a local JSON file for persistence
-        across application sessions. Handles file I/O errors gracefully.
-        """
+        """Save current API configuration"""
         config = {
             'base_url': self.url_text.GetValue(),
             'download_path': self.download_path.GetValue(),
@@ -1010,15 +824,7 @@ class EcosysAPICurator(wx.Frame):
             pass
     
     def on_env_change(self, event):
-        """
-        Handle environment selection change between production and development.
-        
-        Args:
-            event: wx.Event - Choice control selection event
-            
-        Updates the base URL text field based on the selected environment,
-        switching between production EcoSIS server and development server URLs.
-        """
+        """Handle environment selection change"""
         selection = self.env_choice.GetSelection()
         if selection == 0:  # Production
             self.url_text.SetValue("https://ecosis.org")
@@ -1026,16 +832,7 @@ class EcosysAPICurator(wx.Frame):
             self.url_text.SetValue("http://dev-search.ecospectra.org")
     
     def build_filters(self):
-        """
-        Build EcoSIS API filters based on current UI filter settings.
-        
-        Returns:
-            list: List of filter dictionaries for API query parameters
-            
-        Constructs API-compatible filter objects from the current state
-        of theme, organization, and date range filter controls. Handles
-        regex patterns for text matching and date range validation.
-        """
+        """Build EcoSIS API filters based on current UI state"""
         filters = []
         
         # Theme filter (instead of Category)
@@ -1078,41 +875,19 @@ class EcosysAPICurator(wx.Frame):
 
     # Event handlers
     def on_connect(self, event):
-        """
-        Handle API connection button click event.
-        
-        Args:
-            event: wx.Event - Button click event object
-            
-        Initiates connection to the EcoSIS API and begins loading dataset
-        information. Updates status bar and delegates to threaded loading
-        function to prevent UI blocking during network operations.
-        """
+        """Connect to API and load initial data"""
         self.SetStatusText("Connecting to EcoSIS API...")
         # Use threading to avoid blocking UI
         wx.CallAfter(self.load_api_data_threaded)
         
     def load_api_data_threaded(self):
-        """
-        Start API data loading in a separate thread to prevent UI blocking.
-        
-        Creates and starts a daemon thread for API data loading operations,
-        ensuring the UI remains responsive during potentially long-running
-        network operations and data processing tasks.
-        """
+        """Load API data in a separate thread to avoid blocking UI"""
         loading_thread = threading.Thread(target=self.load_api_data)
         loading_thread.daemon = True
         loading_thread.start()
         
     def load_api_data(self):
-        """
-        Load dataset information from EcoSIS API without pagination limits.
-        
-        Performs batch loading of all available datasets from the EcoSIS API,
-        processing search filters and extracting photo metadata. Updates
-        progress indicators and UI components using wx.CallAfter for thread safety.
-        Handles network errors gracefully and provides user feedback.
-        """
+        """Load all data from EcoSIS API without pagination"""
         try:
             base_url = self.url_text.GetValue().rstrip('/')
             search_text = self.search_text.GetValue()
@@ -1197,13 +972,7 @@ class EcosysAPICurator(wx.Frame):
             wx.CallAfter(self.data_info.SetLabel, f"Error: {str(e)}")
             
     def download_all_photos(self):
-        """
-        Initiate background download of photos for all datasets that have them.
-        
-        Creates a background worker thread to download photos for all datasets
-        that have photo URLs in their metadata. Runs as a daemon thread to
-        avoid blocking the application during photo download operations.
-        """
+        """Download photos for all datasets that have them"""
         def download_worker():
             for dataset_id, photos in self.dataset_photos.items():
                 # Find the dataset
@@ -1221,14 +990,7 @@ class EcosysAPICurator(wx.Frame):
         download_thread.start()
 
     def update_data_grid(self):
-        """
-        Update the main data grid with current filtered dataset information.
-        
-        Refreshes the data grid display with the current filtered dataset list,
-        including checkbox states for local availability, dataset metadata,
-        and visual highlighting for locally available datasets. Handles
-        EcoSIS-specific data structure formatting and display optimization.
-        """
+        """Update the data grid with current EcoSIS data including checkboxes and highlighting"""
         # Clear existing data
         if self.data_grid.GetNumberRows() > 0:
             self.data_grid.DeleteRows(0, self.data_grid.GetNumberRows())
@@ -1313,10 +1075,1434 @@ class EcosysAPICurator(wx.Frame):
                 self.highlight_local_row(i)
         
     def check_local_data(self):
-        """
-        Scan local directory for existing spectral JSON files.
+        """Check which datasets' spectral JSON files are available locally"""
+        download_path = self.download_path.GetValue()
         
-        Examines the download directory for spectral JSON files following
-        the application's naming convention, populating the local_datasets
-        set with available dataset identifiers for quick lookup.
-        """
+        if not os.path.exists(download_path):
+            return
+            
+        self.local_datasets = set()  # Reset the set
+        
+        try:
+            for filename in os.listdir(download_path):
+                if filename.startswith('spectra_') and filename.endswith('.json'):
+                    # Extract dataset name from filename
+                    dataset_name = filename[8:-5]  # Remove 'spectra_' and '.json'
+                    
+                    # Store both the clean filename version and various title variations
+                    self.local_datasets.add(dataset_name)
+                    
+                    # Convert underscores back to spaces for matching
+                    dataset_name_spaced = dataset_name.replace('_', ' ')
+                    self.local_datasets.add(dataset_name_spaced)
+                    
+                    # Also store the original filename without extension for exact matching
+                    self.local_datasets.add(filename[:-5])  # Remove just .json
+                    
+        except OSError as e:
+            print(f"DEBUG: Error scanning directory: {e}")
+        
+    def on_grid_cell_click(self, event):
+        """Handle grid cell clicks, especially for checkbox column"""
+        row = event.GetRow()
+        col = event.GetCol()
+        
+        if col == 0:  # Checkbox column
+            if 0 <= row < len(self.filtered_data):
+                dataset = self.filtered_data[row]
+                current_value = self.data_grid.GetCellValue(row, col)
+                
+                if current_value == "1":
+                    # Unchecking - user wants to remove local data (optional feature)
+                    pass  # For now, just allow unchecking
+                else:
+                    # Checking - user wants to download
+                    self.download_single_dataset(dataset, row)
+        else:
+            # For other columns, handle normal selection
+            if 0 <= row < len(self.filtered_data):
+                dataset = self.filtered_data[row]
+                self.current_selection = dataset
+                
+                # Check if local data exists
+                is_local = self.is_dataset_local(dataset)
+                
+                self.update_metadata_display()
+                title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
+                self.selection_info.SetLabel(f"Selected: {title}")
+                
+                # Automatically display photos for the selected dataset
+                wx.CallAfter(self.display_photos_for_dataset, dataset)
+        
+        event.Skip()
+        
+    def on_grid_select(self, event):
+        """Handle grid row selection"""
+        row = event.GetRow()
+        if 0 <= row < len(self.filtered_data):
+            self.current_selection = self.filtered_data[row]
+            self.update_metadata_display()
+            self.selection_info.SetLabel(f"Selected: {self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')}")
+            
+            # Display photos automatically
+            wx.CallAfter(self.display_photos_for_dataset, self.current_selection)
+            
+    def on_refresh_photos(self, event):
+        """Refresh photos for the current selection"""
+        if self.current_selection:
+            self.display_photos_for_dataset(self.current_selection)
+        else:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+    
+    def on_open_dataset_page(self, event):
+        """Open the EcoSIS dataset page in web browser"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+            
+        dataset_id = self.current_selection.get('_id')
+        if dataset_id:
+            url = f"https://ecosis.org/package/{dataset_id}"
+            import webbrowser
+            webbrowser.open(url)
+        else:
+            wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def download_single_dataset(self, dataset, row):
+        """Download complete spectral data in JSON format when checkbox is clicked"""
+        title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
+        dataset_id = dataset.get('_id')
+        
+        if not dataset_id:
+            wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
+            return
+            
+        # Update UI to show downloading
+        self.data_grid.SetCellValue(row, 7, "Downloading...")  # Status column
+        
+        # Start download in thread
+        download_thread = threading.Thread(target=self.download_spectral_json_worker, 
+                                         args=(dataset_id, title, row))
+        download_thread.daemon = True
+        download_thread.start()
+        
+    def normalize_filename(self, title):
+        """Normalize dataset title for consistent filename generation"""
+        # Replace problematic characters consistently
+        clean_title = title.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        return clean_title
+    
+    def download_spectral_json_worker(self, dataset_id, title, row):
+        """Worker thread for downloading complete spectral data in JSON format"""
+        try:
+            base_url = self.url_text.GetValue().rstrip('/')
+            download_path = self.download_path.GetValue()
+            os.makedirs(download_path, exist_ok=True)
+            
+            # Use consistent filename normalization
+            clean_title = self.normalize_filename(title)
+            filename = f"spectra_{clean_title}.json"
+            filepath = os.path.join(download_path, filename)
+            
+            # Download all spectra in blocks of 10
+            all_spectra = []
+            block_size = 10
+            start = 0
+            total_downloaded = 0
+            
+            wx.CallAfter(self.SetStatusText, f"Downloading spectra for: {title}")
+            
+            while True:
+                # Get spectra block using EcoSIS API
+                spectra_url = f"{base_url}/api/spectra/search/{dataset_id}"
+                params = {
+                    'start': start,
+                    'stop': start + block_size,
+                    'filters': '[]'
+                }
+                
+                response = requests.get(spectra_url, params=params, timeout=60)
+                
+                if response.status_code == 200:
+                    spectra_data = response.json()
+                    items = spectra_data.get('items', [])
+                    
+                    if not items:
+                        break  # No more spectra to download
+                    
+                    all_spectra.extend(items)
+                    total_downloaded += len(items)
+                    start += block_size
+                    
+                    # Update progress
+                    wx.CallAfter(self.data_grid.SetCellValue, row, 7, f"Downloaded {total_downloaded}")
+                    wx.CallAfter(self.SetStatusText, f"Downloaded {total_downloaded} spectra for: {title}")
+                    
+                    # If we got fewer items than requested, we've reached the end
+                    if len(items) < block_size:
+                        break
+                        
+                else:
+                    wx.CallAfter(self.data_grid.SetCellValue, row, 7, f"Error: HTTP {response.status_code}")
+                    return
+            
+            if all_spectra:
+                # Create comprehensive JSON structure
+                complete_data = {
+                    'dataset_info': {
+                        'id': dataset_id,
+                        'title': title,
+                        'download_date': datetime.now().isoformat(),
+                        'total_spectra': len(all_spectra),
+                        'source': 'EcoSIS API'
+                    },
+                    'spectra': all_spectra
+                }
+                
+                # Save JSON file
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(complete_data, f, indent=2)
+                
+                print(f"DEBUG: Saved {len(all_spectra)} spectra to {filepath}")
+                
+                # Update local datasets tracking immediately after successful download
+                wx.CallAfter(self.check_local_data)  # Refresh the local datasets list
+                
+                # Update UI
+                wx.CallAfter(self.data_grid.SetCellValue, row, 0, "1")  # Check the checkbox
+                wx.CallAfter(self.data_grid.SetCellValue, row, 7, f"Complete ({total_downloaded})")
+                wx.CallAfter(self.highlight_local_row, row)
+                wx.CallAfter(self.SetStatusText, f"Downloaded {total_downloaded} spectra: {title}")
+                
+            else:
+                wx.CallAfter(self.data_grid.SetCellValue, row, 7, "No spectra found")
+                
+        except Exception as e:
+            error_msg = f"Error: {str(e)[:20]}"
+            wx.CallAfter(self.data_grid.SetCellValue, row, 7, error_msg)
+            wx.CallAfter(self.SetStatusText, f"Download failed: {title}")
+            
+    def is_dataset_local(self, dataset):
+        """Check if a dataset's spectral JSON is available locally"""
+        if not dataset:
+            return False
+            
+        download_path = self.download_path.GetValue()
+        title = dataset.get('ecosis', {}).get('package_title', '')
+        
+        if not title:
+            return False
+            
+        # Use consistent filename normalization
+        clean_title = self.normalize_filename(title)
+        filename = f"spectra_{clean_title}.json"
+        filepath = os.path.join(download_path, filename)
+        
+        # Check what files actually exist
+        try:
+            existing_files = [f for f in os.listdir(download_path) if f.startswith('spectra_') and f.endswith('.json')]
+            
+            # Check for exact match first
+            if filename in existing_files:
+                file_size = os.path.getsize(filepath)
+                return file_size > 100
+            
+            # Check for case variations or other close matches
+            for existing_file in existing_files:
+                if existing_file.lower() == filename.lower():
+                    alt_filepath = os.path.join(download_path, existing_file)
+                    file_size = os.path.getsize(alt_filepath)
+                    return file_size > 100
+                    
+        except OSError as e:
+            print(f"DEBUG: Error listing directory: {e}")
+        
+        return False
+        
+    def load_spectral_data_local(self, dataset):
+        """Load spectral data from local JSON file"""
+        try:
+            download_path = self.download_path.GetValue()
+            title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
+            
+            # Use consistent filename normalization
+            clean_title = self.normalize_filename(title)
+            filename = f"spectra_{clean_title}.json"
+            filepath = os.path.join(download_path, filename)
+            
+            # List existing files for debugging and find actual file
+            actual_filepath = None
+            try:
+                existing_files = [f for f in os.listdir(download_path) if f.startswith('spectra_') and f.endswith('.json')]
+                
+                # Try exact match first
+                if filename in existing_files:
+                    actual_filepath = filepath
+                else:
+                    # Try case-insensitive match
+                    for existing_file in existing_files:
+                        if existing_file.lower() == filename.lower():
+                            actual_filepath = os.path.join(download_path, existing_file)
+                            break
+                            
+            except OSError as e:
+                print(f"DEBUG: Error listing directory: {e}")
+            
+            if not actual_filepath or not os.path.exists(actual_filepath):
+                return False
+                
+            # Check file size first
+            file_size = os.path.getsize(actual_filepath)
+            
+            if file_size < 100:
+                return False
+                
+            # Read JSON file
+            with open(actual_filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Process local JSON data into spectral format
+            spectral_data = self.process_local_json_data(data, title)
+            
+            if spectral_data:
+                # Cache the local data
+                self.cached_spectral_data = spectral_data
+                
+                # Plot the cached data
+                self.plot_cached_spectral_data()
+                
+                total_spectra = data.get('dataset_info', {}).get('total_spectra', len(spectral_data))
+                status_msg = f"Loaded {len(spectral_data)} of {total_spectra} spectra from local file"
+                self.SetStatusText(status_msg)
+                return True
+            else:
+                wx.MessageBox("No spectral data found in local file", "No Data", wx.OK | wx.ICON_WARNING)
+                return False
+                
+        except json.JSONDecodeError as e:
+            wx.MessageBox(f"Invalid JSON file: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return False
+        except FileNotFoundError as e:
+            wx.MessageBox(f"File not found: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return False
+        except Exception as e:
+            wx.MessageBox(f"Error loading local data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return False
+            
+    def process_local_json_data(self, data, title):
+        """Process local JSON data into spectral format"""
+        spectral_data = []
+        
+        try:
+            spectra_items = data.get('spectra', [])
+            
+            if not spectra_items:
+                return []
+            
+            # Process up to 15 spectra for visualization
+            for i, spectrum in enumerate(spectra_items[:15]):
+                if not isinstance(spectrum, dict):
+                    continue
+                    
+                datapoints = spectrum.get('datapoints', {})
+                
+                if not datapoints:
+                    continue
+                
+                # Separate wavelengths from other metadata
+                spectrum_wavelengths = []
+                spectrum_reflectance = []
+                
+                for key, value in datapoints.items():
+                    try:
+                        # Check if key looks like a wavelength (numeric)
+                        wavelength = float(key)
+                        if 300 <= wavelength <= 2500:  # Typical spectral range
+                            spectrum_wavelengths.append(wavelength)
+                            
+                            # Handle various value formats
+                            if isinstance(value, (int, float)):
+                                refl_value = float(value)
+                            else:
+                                refl_value = float(str(value))
+                            spectrum_reflectance.append(refl_value)
+                            
+                    except (ValueError, TypeError):
+                        continue
+                
+                if spectrum_wavelengths and spectrum_reflectance:
+                    # Sort by wavelength
+                    sorted_data = sorted(zip(spectrum_wavelengths, spectrum_reflectance))
+                    if sorted_data:
+                        wavelengths, reflectance = zip(*sorted_data)
+                        
+                        # Create meaningful legend label
+                        label = self.create_spectrum_label(spectrum, i + 1)
+                        
+                        spectral_data.append({
+                            'wavelengths': wavelengths,
+                            'reflectance': reflectance,
+                            'label': label,
+                            'color_index': len(spectral_data)
+                        })
+                        
+        except Exception as e:
+            print(f"DEBUG: process_local_json_data - Exception: {e}")
+            return []
+            
+        return spectral_data
+          
+    def highlight_local_row(self, row):
+        """Highlight a row that has local data available with dark mode support"""
+        # Check for dark mode and use appropriate colors
+        if wx.SystemSettings.GetAppearance().IsDark():
+            # Dark mode: subtle dark blue highlight
+            highlight_color = wx.Colour(45, 55, 80)  # Dark blue-gray
+        else:
+            # Light mode: light blue highlight
+            highlight_color = wx.Colour(230, 240, 255)  # Light blue
+            
+        # Set background color for all columns in the row
+        for col in range(self.data_grid.GetNumberCols()):
+            self.data_grid.SetCellBackgroundColour(row, col, highlight_color)
+        
+        self.data_grid.Refresh()
+        
+    def collect_organizations(self):
+        """Collect unique organizations from current dataset"""
+        for dataset in self.api_data:
+            ecosis_info = dataset.get('ecosis', {})
+            organization = ecosis_info.get('organization', [])
+            
+            if isinstance(organization, list):
+                for org in organization:
+                    if org and str(org).strip():
+                        self.all_organizations.add(str(org).strip())
+            elif isinstance(organization, str) and organization.strip():
+                self.all_organizations.add(organization.strip())
+    
+    def collect_themes(self):
+        """Collect unique themes from current dataset"""
+        for dataset in self.api_data:
+            theme_list = dataset.get('Theme', [])
+            if isinstance(theme_list, list):
+                for theme in theme_list:
+                    if theme and str(theme).strip():
+                        self.all_themes.add(str(theme).strip())
+            elif isinstance(theme_list, str) and theme_list.strip():
+                self.all_themes.add(theme_list.strip())
+                
+            # Also collect from Category field
+            category_list = dataset.get('Category', [])
+            if isinstance(category_list, list):
+                for category in category_list:
+                    if category and str(category).strip():
+                        self.all_themes.add(str(category).strip())
+            elif isinstance(category_list, str) and category_list.strip():
+                self.all_themes.add(category_list.strip())
+                
+    def update_organization_combobox(self):
+        """Update organization combobox with collected organizations"""
+        # Clear existing items
+        self.org_choice.Clear()
+        
+        # Add "All" option
+        self.org_choice.Append("All")
+        
+        # Add sorted organizations
+        sorted_orgs = sorted(list(self.all_organizations))
+        for org in sorted_orgs:
+            self.org_choice.Append(org)
+        
+        # Set to "All" by default
+        self.org_choice.SetSelection(0)
+        
+    def update_theme_combobox(self):
+        """Update theme combobox with collected themes"""
+        # Get current selection
+        current_selection = self.type_choice.GetStringSelection()
+        
+        # Clear existing items
+        self.type_choice.Clear()
+        
+        # Add "All" option
+        self.type_choice.Append("All")
+        
+        # Add sorted themes
+        sorted_themes = sorted(list(self.all_themes))
+        for theme in sorted_themes:
+            self.type_choice.Append(theme)
+        
+        # Try to restore previous selection, otherwise set to "All"
+        if current_selection and current_selection in sorted_themes:
+            self.type_choice.SetStringSelection(current_selection)
+        else:
+            self.type_choice.SetSelection(0)  # "All"
+        
+    def update_metadata_display(self):
+        """Update metadata display for selected EcoSIS dataset"""
+        if not self.current_selection:
+            return
+            
+        # Format metadata for EcoSIS dataset
+        metadata_text = "EcoSIS Dataset Metadata:\n\n"
+        
+        # Dataset ID and basic info
+        metadata_text += f"Dataset ID: {self.current_selection.get('_id', 'Unknown')}\n\n"
+        
+        # EcoSIS-specific information
+        ecosis_info = self.current_selection.get('ecosis', {})
+        if ecosis_info:
+            metadata_text += "Dataset Information:\n"
+            for key, value in ecosis_info.items():
+                if isinstance(value, list):
+                    value_str = ', '.join(str(v) for v in value)
+                else:
+                    value_str = str(value)
+                metadata_text += f"  {key.title().replace('_', ' ')}: {value_str}\n"
+            metadata_text += "\n"
+        
+        # Dataset attributes (spectral metadata)
+        metadata_text += "Spectral Attributes:\n"
+        for key, value in self.current_selection.items():
+            if key not in ['_id', 'ecosis'] and value:
+                if isinstance(value, list):
+                    if len(value) <= 5:
+                        value_str = ', '.join(str(v) for v in value)
+                    else:
+                        value_str = f"{', '.join(str(v) for v in value[:5])}... ({len(value)} total)"
+                else:
+                    value_str = str(value)
+                metadata_text += f"  {key.title().replace('_', ' ')}: {value_str}\n"
+                
+        self.metadata_text.SetValue(metadata_text)
+        
+    def on_search_text(self, event):
+        """Handle search text changes with timer to avoid too frequent updates"""
+        # Stop previous timer if running
+        if self.search_timer.IsRunning():
+            self.search_timer.Stop()
+        
+        # Start timer for 300ms delay
+        self.search_timer.Start(300, wx.TIMER_ONE_SHOT)
+    
+    def on_search_timer(self, event):
+        """Called when search timer expires - perform the actual search"""
+        self.apply_local_filters()
+    
+    def on_filter_change(self, event):
+        """Handle filter changes"""
+        # Use local filtering for instant results
+        self.apply_local_filters()
+        
+    def apply_local_filters(self):
+        """Apply current search and filter settings locally for instant results"""
+        search_term = self.search_text.GetValue().lower()
+        theme_filter = self.type_choice.GetStringSelection()
+        org_filter = self.org_choice.GetValue().strip().lower()
+        
+        self.filtered_data = []
+        
+        for dataset in self.api_data:
+            # Apply search filter - search in title, keywords, and other text fields
+            if search_term:
+                ecosis_info = dataset.get('ecosis', {})
+                title = ecosis_info.get('package_title', '').lower()
+                keywords = dataset.get('Keywords', [])
+                if isinstance(keywords, list):
+                    keywords_str = ' '.join(str(kw) for kw in keywords).lower()
+                else:
+                    keywords_str = str(keywords).lower()
+                
+                # Search in title, keywords, and organization
+                organization = ecosis_info.get('organization', [])
+                if isinstance(organization, list):
+                    org_str = ' '.join(str(org) for org in organization).lower()
+                else:
+                    org_str = str(organization).lower()
+                
+                # Check if search term is found in any of these fields
+                if (search_term not in title and 
+                    search_term not in keywords_str and 
+                    search_term not in org_str):
+                    continue
+            
+            # Apply theme filter - simplified exact matching
+            if theme_filter and theme_filter != "All":
+                theme_list = dataset.get('Theme', [])
+                category_list = dataset.get('Category', [])
+                theme_match = False
+                
+                # Check if the selected theme appears in the Theme list
+                if isinstance(theme_list, list):
+                    theme_match = theme_filter in theme_list
+                elif isinstance(theme_list, str):
+                    theme_match = theme_filter == theme_list
+                
+                # Also check Category list if Theme didn't match
+                if not theme_match and isinstance(category_list, list):
+                    theme_match = theme_filter in category_list
+                elif not theme_match and isinstance(category_list, str):
+                    theme_match = theme_filter == category_list
+                
+                if not theme_match:
+                    continue
+            
+            # Apply organization filter
+            if org_filter and org_filter != "all":
+                ecosis_info = dataset.get('ecosis', {})
+                organization = ecosis_info.get('organization', [])
+                if isinstance(organization, list):
+                    org_match = any(org_filter in str(org).lower() for org in organization)
+                elif isinstance(organization, str):
+                    org_match = org_filter in organization.lower()
+                else:
+                    org_match = False
+                    
+                if not org_match:
+                    continue
+            
+            self.filtered_data.append(dataset)
+        
+        # Update the grid with filtered results
+        wx.CallAfter(self.update_data_grid)
+        wx.CallAfter(self.SetStatusText, f"Showing {len(self.filtered_data)} of {len(self.api_data)} datasets")
+        
+    def on_load_spectral(self, event):
+        """Load and display spectral data for selected dataset"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+        
+        self.load_spectral_data()
+        
+    def load_spectral_data(self):
+        """Load spectral data from local file if available, otherwise from EcoSIS API"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+        
+        # Check if data is available locally first
+        is_local = self.is_dataset_local(self.current_selection)
+        
+        if is_local:
+            success = self.load_spectral_data_local(self.current_selection)
+            if success:
+                return  # Successfully loaded from local file
+            
+        # Fallback to API if local loading failed or not available
+        self.load_spectral_data_api()
+        
+    def load_spectral_data_api(self):
+        """Load spectral data from EcoSIS API"""
+        try:
+            base_url = self.url_text.GetValue().rstrip('/')
+            dataset_id = self.current_selection.get('_id')
+            
+            if not dataset_id:
+                wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
+                return
+            
+            # Get spectra data using EcoSIS API
+            spectra_url = f"{base_url}/api/spectra/search/{dataset_id}"
+            params = {
+                'start': 0,
+                'stop': 10,  # Limit to first 10 spectra for performance
+                'filters': '[]'
+            }
+            
+            response = requests.get(spectra_url, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                spectra_data = response.json()
+                items = spectra_data.get('items', [])
+                
+                if not items:
+                    wx.MessageBox("No spectral data found for this dataset", "No Data", wx.OK | wx.ICON_WARNING)
+                    return
+                
+                # Process and cache spectral data
+                self.cached_spectral_data = self.process_spectral_data(items)
+                
+                # Plot the cached data
+                self.plot_cached_spectral_data()
+                
+                self.SetStatusText(f"Loaded {len(self.cached_spectral_data)} spectra from API")
+                
+            else:
+                wx.MessageBox(f"API Error: HTTP {response.status_code}", "Error", wx.OK | wx.ICON_ERROR)
+                
+        except requests.RequestException as e:
+            wx.MessageBox(f"Network error: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+        except Exception as e:
+            wx.MessageBox(f"Error loading spectral data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def process_spectral_data(self, items):
+        """Process raw spectral data and cache it for efficient reuse"""
+        processed_spectra = []
+        
+        for i, spectrum in enumerate(items[:5]):  # Limit to 5 spectra for clarity
+            datapoints = spectrum.get('datapoints', {})
+            
+            # Separate wavelengths from other metadata
+            spectrum_wavelengths = []
+            spectrum_reflectance = []
+            
+            for key, value in datapoints.items():
+                try:
+                    # Check if key looks like a wavelength (numeric)
+                    wavelength = float(key)
+                    if 300 <= wavelength <= 2500:  # Typical spectral range
+                        spectrum_wavelengths.append(wavelength)
+                        spectrum_reflectance.append(float(str(value)))  # Convert to float safely
+                except (ValueError, TypeError):
+                    continue  # Skip non-numeric keys (metadata)
+            
+            if spectrum_wavelengths and spectrum_reflectance:
+                # Sort by wavelength
+                sorted_data = sorted(zip(spectrum_wavelengths, spectrum_reflectance))
+                if sorted_data:
+                    wavelengths, reflectance = zip(*sorted_data)
+                    
+                    # Create meaningful legend label
+                    label = self.create_spectrum_label(spectrum, i + 1)
+                    
+                    # Store processed data
+                    processed_spectra.append({
+                        'wavelengths': wavelengths,
+                        'reflectance': reflectance,
+                        'label': label,
+                        'color_index': len(processed_spectra)
+                    })
+        
+        return processed_spectra
+    
+    def plot_cached_spectral_data(self):
+        """Plot spectral data from cache - efficient for redraws"""
+        if not self.cached_spectral_data:
+            return
+        
+        # Clear previous plots
+        self.spectral_axes.clear()
+        self.configure_spectral_plot()
+        
+        # Color palette for multiple spectra
+        colors = plt.cm.tab10(np.linspace(0, 1, len(self.cached_spectral_data)))
+        
+        # Track min/max values for dynamic axis scaling
+        all_reflectance_values = []
+        
+        # Plot each cached spectrum
+        for spectrum_data in self.cached_spectral_data:
+            self.spectral_axes.plot(spectrum_data['wavelengths'], 
+                                  spectrum_data['reflectance'],
+                                  color=colors[spectrum_data['color_index']], 
+                                  label=spectrum_data['label'], 
+                                  alpha=0.8, 
+                                  linewidth=1.5)
+            
+            # Collect all reflectance values for axis scaling
+            all_reflectance_values.extend(spectrum_data['reflectance'])
+        
+        # Update plot with dataset title
+        dataset_title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
+        self.spectral_axes.set_title(f"Spectral Data: {dataset_title}")
+        
+        # Set reasonable axis limits
+        self.spectral_axes.set_xlim(300, 2500)
+        
+        # Dynamic Y-axis scaling based on actual data
+        if all_reflectance_values:
+            y_min = min(all_reflectance_values)
+            y_max = max(all_reflectance_values)
+            y_range = y_max - y_min
+            
+            # Add 5% padding above and below
+            padding = y_range * 0.05
+            self.spectral_axes.set_ylim(y_min - padding, y_max + padding)
+            
+            # Update y-axis label to show the units (percentage)
+            self.spectral_axes.set_ylabel("Reflectance (%)")
+        else:
+            # Fallback to 0-1 if no data
+            self.spectral_axes.set_ylim(0, 1)
+            self.spectral_axes.set_ylabel("Reflectance")
+        
+        # Configure legend
+        if self.cached_spectral_data:
+            legend = self.spectral_axes.legend(loc='upper right', 
+                                             framealpha=0.9, 
+                                             fancybox=True, 
+                                             shadow=True)
+            # Adjust legend text color for dark mode
+            if wx.SystemSettings.GetAppearance().IsDark():
+                for text in legend.get_texts():
+                    text.set_color('white')
+        
+        # Apply tight layout and draw
+        self.spectral_figure.tight_layout()
+        self.spectral_canvas.draw()    
+    
+    def create_spectrum_label(self, spectrum, spectrum_num):
+        """Create a meaningful label for spectrum legend"""
+        # Priority order for creating informative labels
+        label_parts = []
+        
+        # 1. Try scientific name
+        scientific_name = spectrum.get('Scientific Name')
+        if scientific_name:
+            if isinstance(scientific_name, list) and scientific_name:
+                label_parts.append(str(scientific_name[0]))
+            elif isinstance(scientific_name, str):
+                label_parts.append(scientific_name)
+        
+        # 2. Try common name if no scientific name
+        if not label_parts:
+            common_name = spectrum.get('Common Name')
+            if common_name:
+                if isinstance(common_name, list) and common_name:
+                    label_parts.append(str(common_name[0]))
+                elif isinstance(common_name, str):
+                    label_parts.append(common_name)
+        
+        # 3. Try sample ID or specimen ID
+        if not label_parts:
+            for field in ['Sample ID', 'Specimen ID', 'ID', 'Sample_ID', 'Unique_ID']:
+                sample_id = spectrum.get(field)
+                if sample_id:
+                    if isinstance(sample_id, list) and sample_id:
+                        label_parts.append(f"ID: {sample_id[0]}")
+                    elif isinstance(sample_id, str):
+                        label_parts.append(f"ID: {sample_id}")
+                    break
+        
+        # Fallback to generic spectrum number
+        if not label_parts:
+            return f"Spectrum {spectrum_num}"
+        
+        # Combine parts (limit to 2 parts for readability)
+        label = " - ".join(label_parts[:2])
+        
+        # Add spectrum number if we have other info
+        if label_parts:
+            return f"S{spectrum_num}: {label}"
+        else:
+            return f"Spectrum {spectrum_num}"
+            
+    def on_calculate_indices(self, event):
+        """Calculate vegetation indices for current spectral data"""
+        if not self.current_selection:
+            wx.MessageBox("Please load spectral data first", "No Data", wx.OK | wx.ICON_WARNING)
+            return
+            
+        try:
+            # Get spectral statistics to calculate indices
+            base_url = self.url_text.GetValue().rstrip('/')
+            dataset_id = self.current_selection.get('_id')
+            
+            stats_url = f"{base_url}/api/spectra/stats/{dataset_id}"
+            response = requests.get(stats_url, timeout=30)
+            
+            if response.status_code == 200:
+                stats_data = response.json()
+                
+                # Calculate common vegetation indices
+                indices_results = {}
+                
+                # Try to calculate NDVI (NIR - Red) / (NIR + Red)
+                # Look for wavelengths around 670nm (Red) and 800nm (NIR)
+                red_bands = [key for key in stats_data.keys() if self.is_near_wavelength(key, 670, 20)]
+                nir_bands = [key for key in stats_data.keys() if self.is_near_wavelength(key, 800, 50)]
+                
+                if red_bands and nir_bands:
+                    red_key = min(red_bands, key=lambda x: abs(float(x) - 670))
+                    nir_key = min(nir_bands, key=lambda x: abs(float(x) - 800))
+                    
+                    red_avg = float(stats_data[red_key]['avg'])
+                    nir_avg = float(stats_data[nir_key]['avg'])
+                    
+                    ndvi = (nir_avg - red_avg) / (nir_avg + red_avg) if (nir_avg + red_avg) != 0 else 0
+                    indices_results['NDVI'] = f"{ndvi:.4f} (Red: {red_key}nm, NIR: {nir_key}nm)"
+                
+                # Calculate other indices if possible
+                green_bands = [key for key in stats_data.keys() if self.is_near_wavelength(key, 550, 30)]
+                if green_bands and red_bands and nir_bands:
+                    green_key = min(green_bands, key=lambda x: abs(float(x) - 550))
+                    green_avg = float(stats_data[green_key]['avg'])
+                    
+                    # Simple Ratio (SR)
+                    sr = nir_avg / red_avg if red_avg != 0 else 0
+                    indices_results['Simple Ratio (SR)'] = f"{sr:.4f}"
+                    
+                    # Green NDVI
+                    gndvi = (nir_avg - green_avg) / (nir_avg + green_avg) if (nir_avg + green_avg) != 0 else 0
+                    indices_results['GNDVI'] = f"{gndvi:.4f} (Green: {green_key}nm)"
+                
+                # Display results
+                if indices_results:
+                    results_text = "Calculated Vegetation Indices:\n\n"
+                    for index_name, value in indices_results.items():
+                        results_text += f"{index_name}: {value}\n"
+                    
+                    results_text += f"\nDataset: {self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')}"
+                    results_text += f"\nTotal Spectra: {stats_data.get(list(stats_data.keys())[0], {}).get('count', 0)}"
+                    
+                    wx.MessageBox(results_text, "Vegetation Indices", wx.OK | wx.ICON_INFORMATION)
+                else:
+                    wx.MessageBox("Could not calculate indices - required wavelengths not found", "Info", wx.OK | wx.ICON_INFORMATION)
+                    
+            else:
+                wx.MessageBox(f"Could not retrieve spectral statistics: HTTP {response.status_code}", "Error", wx.OK | wx.ICON_ERROR)
+                
+        except Exception as e:
+            wx.MessageBox(f"Error calculating indices: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def is_near_wavelength(self, key_str, target_wavelength, tolerance):
+        """Check if a wavelength key is near the target wavelength within tolerance"""
+        try:
+            wavelength = float(key_str)
+            return abs(wavelength - target_wavelength) <= tolerance
+        except ValueError:
+            return False
+        
+    def on_add_download(self, event):
+        """Add selected dataset to download queue"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+            
+        # Add to download list
+        index = self.download_list.GetItemCount()
+        dataset_title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
+        self.download_list.InsertItem(index, dataset_title)
+        self.download_list.SetItem(index, 1, "Queued")
+        self.download_list.SetItem(index, 2, "0%")
+        self.download_list.SetItem(index, 3, "Unknown")
+        
+    def on_start_downloads(self, event):
+        """Start downloading queued datasets"""
+        if self.download_list.GetItemCount() == 0:
+            wx.MessageBox("No datasets in download queue", "Empty Queue", wx.OK | wx.ICON_WARNING)
+            return
+            
+        # Start download thread
+        download_thread = threading.Thread(target=self.download_datasets)
+        download_thread.daemon = True
+        download_thread.start()
+        
+    def download_datasets(self):
+        """Download all datasets in queue using EcoSIS export API"""
+        download_path = self.download_path.GetValue()
+        os.makedirs(download_path, exist_ok=True)
+        
+        base_url = self.url_text.GetValue().rstrip('/')
+        total_items = self.download_list.GetItemCount()
+        
+        for i in range(total_items):
+            dataset_name = self.download_list.GetItemText(i)
+            wx.CallAfter(self.download_list.SetItem, i, 1, "Downloading")
+            
+            try:
+                # Find the dataset by name in our current data
+                dataset_id = None
+                for dataset in self.api_data:
+                    if dataset.get('ecosis', {}).get('package_title', '') == dataset_name:
+                        dataset_id = dataset.get('_id')
+                        break
+                
+                if not dataset_id:
+                    wx.CallAfter(self.download_list.SetItem, i, 1, "Error: ID not found")
+                    continue
+                
+                # Use EcoSIS export API
+                export_url = f"{base_url}/api/package/{dataset_id}/export"
+                params = {
+                    'metadata': 'true',  # Include metadata
+                    'filters': '[]'  # No additional filters
+                }
+                
+                wx.CallAfter(self.download_list.SetItem, i, 2, "10%")
+                
+                response = requests.get(export_url, params=params, timeout=120)
+                
+                wx.CallAfter(self.download_list.SetItem, i, 2, "50%")
+                
+                if response.status_code == 200:
+                    # Save CSV file
+                    filename = f"{dataset_name.replace(' ', '_').replace('/', '_')}.csv"
+                    filepath = os.path.join(download_path, filename)
+                    
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    
+                    wx.CallAfter(self.download_list.SetItem, i, 2, "100%")
+                    wx.CallAfter(self.download_list.SetItem, i, 1, "Complete")
+                    
+                    # Also download dataset metadata as JSON
+                    metadata_filename = f"{dataset_name.replace(' ', '_').replace('/', '_')}_metadata.json"
+                    metadata_filepath = os.path.join(download_path, metadata_filename)
+                    
+                    # Find the dataset in our data
+                    dataset_metadata = None
+                    for dataset in self.api_data:
+                        if dataset.get('ecosis', {}).get('package_title', '') == dataset_name:
+                            dataset_metadata = dataset
+                            break
+                    
+                    if dataset_metadata:
+                        with open(metadata_filepath, 'w', encoding='utf-8') as f:
+                            json.dump(dataset_metadata, f, indent=2)
+                    
+                else:
+                    wx.CallAfter(self.download_list.SetItem, i, 1, f"HTTP Error: {response.status_code}")
+                
+            except requests.RequestException as e:
+                wx.CallAfter(self.download_list.SetItem, i, 1, f"Network Error")
+            except Exception as e:
+                wx.CallAfter(self.download_list.SetItem, i, 1, f"Error: {str(e)[:20]}")
+                
+            # Update overall progress
+            progress = ((i + 1) * 100) // total_items
+            wx.CallAfter(self.download_progress_bar.SetValue, progress)
+                
+        wx.CallAfter(self.download_progress_bar.SetValue, 100)
+        wx.CallAfter(self.SetStatusText, "Downloads complete")
+        
+    def on_pause_downloads(self, event):
+        """Pause current downloads"""
+        # Implementation for pausing downloads
+        pass
+        
+    def on_clear_queue(self, event):
+        """Clear download queue"""
+        self.download_list.DeleteAllItems()
+        self.download_progress_bar.SetValue(0)
+        
+    def on_browse_path(self, event):
+        """Browse for download directory"""
+        dlg = wx.DirDialog(self, "Choose download directory")
+        if dlg.ShowModal() == wx.ID_OK:
+            self.download_path.SetValue(dlg.GetPath())
+        dlg.Destroy()
+        
+    def on_export_plot(self, event):
+        """Export current spectral plot with high quality settings"""
+        if not hasattr(self, 'spectral_figure'):
+            wx.MessageBox("No plot to export", "Error", wx.OK | wx.ICON_WARNING)
+            return
+            
+        dlg = wx.FileDialog(self, "Save plot as...", 
+                           wildcard="PNG files (*.png)|*.png|PDF files (*.pdf)|*.pdf|SVG files (*.svg)|*.svg", 
+                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            filepath = dlg.GetPath()
+            try:
+                # Ensure tight layout before saving
+                self.spectral_figure.tight_layout()
+                
+                # High quality export settings
+                self.spectral_figure.savefig(filepath, 
+                                           dpi=300, 
+                                           bbox_inches='tight',
+                                           facecolor=self.spectral_figure.get_facecolor(),
+                                           edgecolor='none',
+                                           transparent=False)
+                
+                wx.MessageBox(f"Plot saved successfully to:\n{filepath}", "Export Complete", wx.OK | wx.ICON_INFORMATION)
+                
+            except Exception as e:
+                wx.MessageBox(f"Error saving plot: {str(e)}", "Export Error", wx.OK | wx.ICON_ERROR)
+                
+        dlg.Destroy()
+        
+    def on_batch_download(self, event):
+        """Add all filtered datasets to download queue"""
+        for dataset in self.filtered_data:
+            index = self.download_list.GetItemCount()
+            dataset_title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
+            self.download_list.InsertItem(index, dataset_title)
+            self.download_list.SetItem(index, 1, "Queued")
+            self.download_list.SetItem(index, 2, "0%")
+            self.download_list.SetItem(index, 3, "Unknown")
+    
+    def on_merge_local_spectra(self, event):
+        """Merge all local spectra JSON files into one consolidated file"""
+        download_path = self.download_path.GetValue()
+        
+        # Check if download directory exists
+        if not os.path.exists(download_path):
+            wx.MessageBox("Download directory does not exist", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        # Find all local spectra JSON files
+        spectra_files = []
+        try:
+            for filename in os.listdir(download_path):
+                if filename.startswith('spectra_') and filename.endswith('.json'):
+                    filepath = os.path.join(download_path, filename)
+                    if os.path.getsize(filepath) > 100:  # Only include non-empty files
+                        spectra_files.append(filepath)
+        except OSError as e:
+            wx.MessageBox(f"Error scanning download directory: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        if not spectra_files:
+            wx.MessageBox("No local spectra JSON files found to merge", "No Files", wx.OK | wx.ICON_WARNING)
+            return
+        
+        # Ask user for output filename
+        dlg = wx.FileDialog(self, "Save merged spectra as...",
+                           defaultFile="merged_spectra.json",
+                           wildcard="JSON files (*.json)|*.json",
+                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+        
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        
+        output_filepath = dlg.GetPath()
+        dlg.Destroy()
+        
+        # Show progress dialog
+        progress_dlg = wx.ProgressDialog("Merging Spectra Files",
+                                       "Merging local spectra JSON files...",
+                                       maximum=len(spectra_files),
+                                       parent=self,
+                                       style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT)
+        
+        try:
+            merged_data = {
+                'merge_info': {
+                    'created_date': datetime.now().isoformat(),
+                    'source_files': len(spectra_files),
+                    'total_datasets': 0,
+                    'total_spectra': 0,
+                    'source': 'EcoSIS API Curator - Local Files Merger'
+                },
+                'datasets': []
+            }
+            
+            total_spectra = 0
+            successful_files = 0
+            
+            for i, filepath in enumerate(spectra_files):
+                if not progress_dlg.Update(i, f"Processing {os.path.basename(filepath)}...")[0]:
+                    # User cancelled
+                    progress_dlg.Destroy()
+                    return
+                
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # Extract dataset info
+                    dataset_info = data.get('dataset_info', {})
+                    spectra = data.get('spectra', [])
+                    
+                    if spectra:  # Only include datasets with spectra
+                        dataset_entry = {
+                            'source_file': os.path.basename(filepath),
+                            'dataset_info': dataset_info,
+                            'spectra_count': len(spectra),
+                            'spectra': spectra
+                        }
+                        
+                        merged_data['datasets'].append(dataset_entry)
+                        total_spectra += len(spectra)
+                        successful_files += 1
+                        
+                        print(f"DEBUG: Merged {len(spectra)} spectra from {os.path.basename(filepath)}")
+                    else:
+                        print(f"DEBUG: Skipping {os.path.basename(filepath)} - no spectra found")
+                
+                except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+                    print(f"DEBUG: Error processing {filepath}: {str(e)}")
+                    continue  # Skip problematic files
+                except Exception as e:
+                    print(f"DEBUG: Unexpected error processing {filepath}: {str(e)}")
+                    continue
+            
+            # Update merge info
+            merged_data['merge_info']['total_datasets'] = len(merged_data['datasets'])
+            merged_data['merge_info']['total_spectra'] = total_spectra
+            merged_data['merge_info']['successful_files'] = successful_files
+            merged_data['merge_info']['failed_files'] = len(spectra_files) - successful_files
+            
+            # Save merged file
+            progress_dlg.Update(len(spectra_files), "Saving merged file...")
+            
+            with open(output_filepath, 'w', encoding='utf-8') as f:
+                json.dump(merged_data, f, indent=2)
+            
+            progress_dlg.Destroy()
+            
+            # Show custom results dialog with file manager option
+            merge_percentage = (successful_files * 100) // len(spectra_files) if len(spectra_files) > 0 else 0
+            results_dlg = MergeResultsDialog(self, 
+                                           merge_percentage=merge_percentage,
+                                           successful_files=successful_files,
+                                           total_files=len(spectra_files),
+                                           total_datasets=len(merged_data['datasets']),
+                                           total_spectra=total_spectra,
+                                           output_filepath=output_filepath,
+                                           file_size_mb=os.path.getsize(output_filepath) / (1024*1024))
+            results_dlg.ShowModal()
+            results_dlg.Destroy()
+            
+            self.SetStatusText(f"Merged {len(merged_data['datasets'])} datasets with {total_spectra:,} spectra")
+            
+        except Exception as e:
+            progress_dlg.Destroy()
+            wx.MessageBox(f"Error during merge operation: {str(e)}", "Merge Error", wx.OK | wx.ICON_ERROR)
+            print(f"DEBUG: Merge operation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+    def on_api_settings(self, event):
+        """Show API settings dialog"""
+        dlg = APISettingsDialog(self)
+        dlg.ShowModal()
+        dlg.Destroy()
+        
+    def on_refresh(self, event):
+        """Refresh data from API"""
+        self.load_api_data()
+        
+    def on_exit(self, event):
+        """Exit application"""
+        self.save_config()
+        if self._mgr:
+            self._mgr.UnInit()
+        self.Destroy()
+
+
+class MergeResultsDialog(wx.Dialog):
+    """Dialog for displaying merge operation results with file manager integration"""
+    
+    def __init__(self, parent, merge_percentage, successful_files, total_files, 
+                 total_datasets, total_spectra, output_filepath, file_size_mb):
+        super().__init__(parent, title="Merge Results", size=(450, 350))
+        
+        self.output_filepath = output_filepath
+        
+        # Main sizer
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # Title and success indicator
+        title_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # Success icon (using Unicode checkmark)
+        success_text = wx.StaticText(self, label="✓ Merge Complete")
+        success_font = wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        success_text.SetFont(success_font)
+        success_text.SetForegroundColour(wx.Colour(0, 128, 0))  # Green color
+        title_sizer.Add(success_text, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 10)
+        
+        main_sizer.Add(title_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Statistics panel
+        stats_box = wx.StaticBox(self, label="Merge Statistics")
+        stats_sizer = wx.StaticBoxSizer(stats_box, wx.VERTICAL)
+        
+        # Percentage indicator with progress bar
+        percentage_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        percentage_label = wx.StaticText(self, label=f"Success Rate: {merge_percentage}%")
+        percentage_label.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        percentage_sizer.Add(percentage_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        
+        # Visual progress bar
+        progress_gauge = wx.Gauge(self, range=100, size=(150, -1))
+        progress_gauge.SetValue(merge_percentage)
+        percentage_sizer.Add(progress_gauge, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        
+        stats_sizer.Add(percentage_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Detailed statistics
+        stats_text = (f"Source files processed: {successful_files} of {total_files}\n"
+                     f"Total datasets merged: {total_datasets:,}\n"
+                     f"Total spectra included: {total_spectra:,}\n"
+                     f"Output file size: {file_size_mb:.1f} MB")
+        
+        if successful_files < total_files:
+            failed_files = total_files - successful_files
+            stats_text += f"\n\nNote: {failed_files} files were skipped due to errors or missing data."
+        
+        stats_display = wx.StaticText(self, label=stats_text)
+        stats_sizer.Add(stats_display, 0, wx.ALL, 10)
+        
+        main_sizer.Add(stats_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        # Output file information
+        file_box = wx.StaticBox(self, label="Output File")
+        file_sizer = wx.StaticBoxSizer(file_box, wx.VERTICAL)
+        
+        # File path display with text control for easy selection
+        path_label = wx.StaticText(self, label="Location:")
+        file_sizer.Add(path_label, 0, wx.ALL, 5)
+        
+        path_display = wx.TextCtrl(self, value=output_filepath, style=wx.TE_READONLY)
+        path_display.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        file_sizer.Add(path_display, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Checkbox for opening file manager
+        self.open_manager_checkbox = wx.CheckBox(self, label="Open file manager to output location")
+        self.open_manager_checkbox.SetValue(True)  # Enabled by default
+        file_sizer.Add(self.open_manager_checkbox, 0, wx.ALL, 10)
+        
+        main_sizer.Add(file_sizer, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # Buttons
+        button_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # Copy path button
+        copy_btn = wx.Button(self, label="Copy Path")
+        copy_btn.Bind(wx.EVT_BUTTON, self.on_copy_path)
+        button_sizer.Add(copy_btn, 0, wx.ALL, 5)
+        
+        button_sizer.AddStretchSpacer()
+        
+        # OK button
+        ok_btn = wx.Button(self, wx.ID_OK, "OK")
+        ok_btn.Bind(wx.EVT_BUTTON, self.on_ok)
+        button_sizer.Add(ok_btn, 0, wx.ALL, 5)
+        
+        main_sizer.Add(button_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        self.SetSizer(main_sizer)
+        
+        # Center the dialog
+        self.Center()
+        
+    def on_copy_path(self, event):
+        """Copy the output file path to the system clipboard"""
+        if wx.TheClipboard.Open():
+            wx.TheClipboard.SetData(wx.TextDataObject(self.output_filepath))
+            wx.TheClipboard.Close()
+            
+            # Show brief confirmation
+            wx.MessageBox("File path copied to clipboard", "Copied", 
+                         wx.OK | wx.ICON_INFORMATION, self)
+    
+    def on_ok(self, event):
+        """Handle OK button click with optional file manager opening"""
+        # Check if user wants to open file manager
+        if self.open_manager_checkbox.GetValue():
+            self.open_file_manager()
+        
+        # Close dialog
+        self.EndModal(wx.ID_OK)
+    
+    def open_file_manager(self):
+        """Open the system file manager to the output file location"""
+        import subprocess
+        import platform
+        import os
+        
+        try:
+            system = platform.system()
+            
+            if system == "Windows":
+                # Windows Explorer - select the file
+                subprocess.run(['explorer', '/select,', self.output_filepath], check=False)
+            elif system == "Darwin":  # macOS
+                # Finder - reveal the file
+                subprocess.run(['open', '-R', self.output_filepath], check=False)
+            elif system == "Linux":
+                # Try various Linux file managers
+                file_dir = os.path.dirname(self.output_filepath)
+                
+                # Try nautilus (GNOME), dolphin (KDE), thunar (XFCE), etc.
+                file_managers = [
+                    ['nautilus', '--select', self.output_filepath],
+                    ['dolphin', '--select', self.output_filepath],
+                    ['thunar', file_dir],
+                    ['pcmanfm', file_dir],
+                    ['nemo', file_dir],
+                    ['xdg-open', file_dir]  # Fallback
+                ]
+                
+                success = False
+                for manager_cmd in file_managers:
+                    try:
+                        subprocess.run(manager_cmd, check=True, 
+                                     stdout=subprocess.DEVNULL, 
+                                     stderr=subprocess.DEVNULL)
+                        success = True
+                        break
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        continue
+                
+                if not success:
+                    # Ultimate fallback - just open the directory
+                    subprocess.run(['xdg-open', file_dir], check=False)
+            else:
+                # Unknown system - try generic approach
+                file_dir = os.path.dirname(self.output_filepath)
+                subprocess.run(['xdg-open', file_dir], check=False)
+                
+        except Exception as e:
+            # If all else fails, show an error message
+            wx.MessageBox(f"Could not open file manager:\n{str(e)}\n\nFile location:\n{self.output_filepath}", 
+                         "File Manager Error", wx.OK | wx.ICON_WARNING, self)
+
+
+class APISettingsDialog(wx.Dialog):
+    """Dialog for configuring API settings"""
+    
+    def __init__(self, parent):
+        super().__init__(parent, title="API Settings", size=(400, 300))
+        
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # API endpoints configuration
+        endpoints_box = wx.StaticBox(self, label="API Endpoints")
+        endpoints_sizer = wx.StaticBoxSizer(endpoints_box, wx.VERTICAL)
+        
+        self.endpoints_list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.endpoints_list.AppendColumn("Endpoint", width=200)
+        self.endpoints_list.AppendColumn("Status", width=100)
+        
+        # Add default endpoints
+        endpoints = [
+            ("datasets", "Active"),
+            ("spectral", "Active"),
+            ("hyperspectral", "Active"),
+            ("multispectral", "Active")
+        ]
+        
+        for i, (endpoint, status) in enumerate(endpoints):
+            self.endpoints_list.InsertItem(i, endpoint)
+            self.endpoints_list.SetItem(i, 1, status)
+            
+        endpoints_sizer.Add(self.endpoints_list, 1, wx.EXPAND | wx.ALL, 5)
+        sizer.Add(endpoints_sizer, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # Buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        test_btn = wx.Button(self, label="Test Connection")
+        btn_sizer.Add(test_btn, 0, wx.ALL, 5)
+        
+        ok_btn = wx.Button(self, wx.ID_OK, "OK")
+        cancel_btn = wx.Button(self, wx.ID_CANCEL, "Cancel")
+        btn_sizer.Add(ok_btn, 0, wx.ALL, 5)
+        btn_sizer.Add(cancel_btn, 0, wx.ALL, 5)
+        
+        sizer.Add(btn_sizer, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        
+        self.SetSizer(sizer)
+
+
+class EcosysApp(wx.App):
+    """Main application class"""
+    
+    def OnInit(self):
+        frame = EcosysAPICurator()
+        frame.Show()
+        return True
+
+
+if __name__ == '__main__':
+    app = EcosysApp()
+    app.MainLoop()
