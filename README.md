@@ -8,3 +8,6 @@
 
 ## Tools->Merge Local Spectra
 <img src="Screenshot from 2025-09-20 12-35-55.png" alt="Tools->Merge Local Spectra">
+
+## Memory Management for merging JSON files with very large sizes
+<img src="Screenshot from 2025-09-21 09-11-19.png" alt="Tools->Merge Local Spectra: Memory management">
