@@ -2127,7 +2127,9 @@ class EcosysAPICurator(wx.Frame):
             self.download_list.SetItem(index, 3, "Unknown")
     
     def on_merge_local_spectra(self, event):
-        """Merge all local spectra JSON files into one consolidated file - RAM efficient version"""
+        """Merge all local spectra JSON files into one consolidated file - Ultra RAM efficient version"""
+        import gc  # Import garbage collector at the top
+        
         download_path = self.download_path.GetValue()
         
         # Check if download directory exists
@@ -2151,25 +2153,22 @@ class EcosysAPICurator(wx.Frame):
             wx.MessageBox("No local spectra JSON files found to merge", "No Files", wx.OK | wx.ICON_WARNING)
             return
         
-        # Check for large files and warn user
+        # Check for large files and warn user - enhanced memory estimation
         large_files = []
         total_size_mb = 0
+        estimated_ram_usage_mb = 0
+        
         for filepath in spectra_files:
             size_mb = os.path.getsize(filepath) / (1024 * 1024)
             total_size_mb += size_mb
-            if size_mb > 100:  # Files larger than 100MB
+            # JSON parsing typically uses 2-3x file size in RAM temporarily
+            estimated_ram_usage_mb += size_mb * 2.5  
+            if size_mb > 50:  # Lowered threshold to 50MB for better warning
                 large_files.append((os.path.basename(filepath), size_mb))
         
-        if large_files:
-            large_files_text = "\n".join([f"• {name}: {size:.1f} MB" for name, size in large_files])
-            warning_msg = (f"Warning: Large files detected that may consume significant memory:\n\n"
-                          f"{large_files_text}\n\n"
-                          f"Total estimated size: {total_size_mb:.1f} MB\n"
-                          f"This operation will use memory-efficient processing.\n\n"
-                          f"Continue with merge?")
-            
-            if wx.MessageBox(warning_msg, "Large Files Warning", 
-                           wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
+        if large_files or estimated_ram_usage_mb > 500:  # Warn if estimated RAM > 500MB
+            # Show custom memory warning dialog with scrollable list
+            if not self.show_memory_warning_dialog(large_files, total_size_mb, estimated_ram_usage_mb):
                 return
         
         # Ask user for output filename
@@ -2185,21 +2184,24 @@ class EcosysAPICurator(wx.Frame):
         output_filepath = dlg.GetPath()
         dlg.Destroy()
         
-        # Show progress dialog
+        # Show progress dialog with memory info
         progress_dlg = wx.ProgressDialog("Merging Spectra Files",
-                                       "Merging local spectra JSON files (memory efficient)...",
+                                       "Merging with ultra-conservative memory management...",
                                        maximum=len(spectra_files),
                                        parent=self,
                                        style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT)
         
         try:
+            # Force initial garbage collection
+            gc.collect()
+            
             # Use streaming JSON writing to minimize memory usage
             total_spectra = 0
             successful_files = 0
             dataset_summaries = []  # Store minimal summaries instead of full data
             
             # Start writing JSON file
-            with open(output_filepath, 'w', encoding='utf-8') as output_file:
+            with open(output_filepath, 'w', encoding='utf-8', buffering=8192) as output_file:
                 # Write opening structure
                 output_file.write('{\n')
                 output_file.write('  "merge_info": {\n')
@@ -2207,14 +2209,18 @@ class EcosysAPICurator(wx.Frame):
                 output_file.write(f'    "source_files": {len(spectra_files)},\n')
                 output_file.write('    "total_datasets": 0,\n')  # Will update later
                 output_file.write('    "total_spectra": 0,\n')   # Will update later
-                output_file.write('    "source": "EcoSIS API Curator - Local Files Merger (Memory Efficient)"\n')
+                output_file.write('    "memory_optimization": "Ultra-conservative with aggressive GC",\n')
+                output_file.write('    "source": "EcoSIS API Curator - Local Files Merger (Ultra Memory Efficient)"\n')
                 output_file.write('  },\n')
                 output_file.write('  "datasets": [\n')
                 
                 first_dataset = True
                 
                 for i, filepath in enumerate(spectra_files):
-                    if not progress_dlg.Update(i, f"Processing {os.path.basename(filepath)}...")[0]:
+                    # Update progress with memory management info
+                    progress_msg = f"Processing {os.path.basename(filepath)}\n(File {i+1}/{len(spectra_files)}) - Cleaning memory..."
+                    
+                    if not progress_dlg.Update(i, progress_msg)[0]:
                         # User cancelled
                         progress_dlg.Destroy()
                         # Clean up incomplete file
@@ -2247,10 +2253,27 @@ class EcosysAPICurator(wx.Frame):
                     except Exception as e:
                         print(f"DEBUG: Error processing {filepath}: {str(e)}")
                         continue  # Skip problematic files
+                    
+                    finally:
+                        # CRITICAL: Aggressive garbage collection after each file
+                        # This is the key enhancement - force cleanup immediately
+                        gc.collect()
+                        
+                        # For extra large files, run multiple GC cycles
+                        file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+                        if file_size_mb > 100:
+                            gc.collect()  # Second pass for large files
+                            gc.collect()  # Third pass for very large files
                 
                 # Close datasets array and file
                 output_file.write('\n  ]\n')
                 output_file.write('}\n')
+                
+                # Force file buffer flush
+                output_file.flush()
+                
+            # Final garbage collection after file operations complete
+            gc.collect()
             
             progress_dlg.Destroy()
             
@@ -2259,20 +2282,24 @@ class EcosysAPICurator(wx.Frame):
                                          len(spectra_files), len(dataset_summaries), 
                                          total_spectra)
             
+            # Final cleanup before showing results
+            dataset_summaries = None  # Release reference
+            gc.collect()
+            
             # Show custom results dialog with file manager option
             merge_percentage = (successful_files * 100) // len(spectra_files) if len(spectra_files) > 0 else 0
             results_dlg = MergeResultsDialog(self, 
                                            merge_percentage=merge_percentage,
                                            successful_files=successful_files,
                                            total_files=len(spectra_files),
-                                           total_datasets=len(dataset_summaries),
+                                           total_datasets=successful_files,  # Use successful_files since summaries cleared
                                            total_spectra=total_spectra,
                                            output_filepath=output_filepath,
                                            file_size_mb=os.path.getsize(output_filepath) / (1024*1024))
             results_dlg.ShowModal()
             results_dlg.Destroy()
             
-            self.SetStatusText(f"Merged {len(dataset_summaries)} datasets with {total_spectra:,} spectra (memory efficient)")
+            self.SetStatusText(f"Merged {successful_files} datasets with {total_spectra:,} spectra (ultra memory efficient)")
             
         except Exception as e:
             progress_dlg.Destroy()
@@ -2280,7 +2307,121 @@ class EcosysAPICurator(wx.Frame):
             print(f"DEBUG: Merge operation failed: {str(e)}")
             import traceback
             traceback.print_exc()
-    
+        
+        finally:
+            # Ensure cleanup even if there's an exception
+            gc.collect()
+
+    def show_memory_warning_dialog(self, large_files, total_size_mb, estimated_ram_usage_mb):
+        """Show compact memory warning dialog with scrollable file list"""
+        # Calculate dialog size based on main window (75% height)
+        main_size = self.GetSize()
+        dialog_height = int(main_size.height * 0.75)
+        dialog_width = min(500, int(main_size.width * 0.6))
+        
+        # Create custom dialog
+        dlg = wx.Dialog(self, title="Memory Usage Warning", 
+                       size=(dialog_width, dialog_height),
+                       style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        
+        # Main sizer
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # Warning icon and title
+        header_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # Warning icon (using Unicode warning symbol)
+        warning_icon = wx.StaticText(dlg, label="⚠")
+        warning_font = wx.Font(20, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        warning_icon.SetFont(warning_font)
+        warning_icon.SetForegroundColour(wx.Colour(255, 140, 0))  # Orange color
+        header_sizer.Add(warning_icon, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 10)
+        
+        # Title
+        title_text = wx.StaticText(dlg, label="Memory Usage Warning")
+        title_font = wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        title_text.SetFont(title_font)
+        header_sizer.Add(title_text, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 10)
+        
+        main_sizer.Add(header_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Memory statistics panel
+        stats_box = wx.StaticBox(dlg, label="Memory Impact")
+        stats_sizer = wx.StaticBoxSizer(stats_box, wx.VERTICAL)
+        
+        stats_text = (f"Total file size: {total_size_mb:.1f} MB\n"
+                     f"Estimated peak RAM usage: {estimated_ram_usage_mb:.1f} MB")
+        
+        stats_label = wx.StaticText(dlg, label=stats_text)
+        stats_sizer.Add(stats_label, 0, wx.ALL, 10)
+        
+        main_sizer.Add(stats_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        # Large files list (scrollable if there are files to show)
+        if large_files:
+            files_box = wx.StaticBox(dlg, label=f"Large Files ({len(large_files)} files)")
+            files_sizer = wx.StaticBoxSizer(files_box, wx.VERTICAL)
+            
+            # Create scrollable list control
+            files_list = wx.ListCtrl(dlg, style=wx.LC_REPORT | wx.LC_SINGLE_SEL, 
+                                   size=(-1, min(150, len(large_files) * 25 + 50)))
+            files_list.AppendColumn("Filename", width=300)
+            files_list.AppendColumn("Size (MB)", width=80)
+            
+            # Populate list
+            for i, (filename, size_mb) in enumerate(large_files):
+                files_list.InsertItem(i, filename)
+                files_list.SetItem(i, 1, f"{size_mb:.1f}")
+            
+            files_sizer.Add(files_list, 1, wx.EXPAND | wx.ALL, 5)
+            main_sizer.Add(files_sizer, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # Memory management info
+        mgmt_box = wx.StaticBox(dlg, label="Memory Management Strategy")
+        mgmt_sizer = wx.StaticBoxSizer(mgmt_box, wx.VERTICAL)
+        
+        mgmt_features = [
+            "✓ Aggressive garbage collection after each file",
+            "✓ Streaming JSON processing (no full loading)",
+            "✓ Chunked processing (100 spectra at a time)",
+            "✓ Immediate memory cleanup and reference clearing"
+        ]
+        
+        for feature in mgmt_features:
+            feature_label = wx.StaticText(dlg, label=feature)
+            feature_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            mgmt_sizer.Add(feature_label, 0, wx.ALL, 2)
+        
+        main_sizer.Add(mgmt_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        # Question
+        question_text = wx.StaticText(dlg, label="Continue with ultra-conservative memory merge?")
+        question_font = wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        question_text.SetFont(question_font)
+        main_sizer.Add(question_text, 0, wx.ALIGN_CENTER | wx.ALL, 10)
+        
+        # Buttons
+        button_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        button_sizer.AddStretchSpacer()
+        
+        cancel_btn = wx.Button(dlg, wx.ID_CANCEL, "Cancel")
+        continue_btn = wx.Button(dlg, wx.ID_OK, "Continue Merge")
+        continue_btn.SetDefault()
+        
+        button_sizer.Add(cancel_btn, 0, wx.ALL, 5)
+        button_sizer.Add(continue_btn, 0, wx.ALL, 5)
+        
+        main_sizer.Add(button_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        dlg.SetSizer(main_sizer)
+        dlg.Center()
+        
+        # Show dialog and return result
+        result = dlg.ShowModal()
+        dlg.Destroy()
+        
+        return result == wx.ID_OK
+
     def process_single_file_streaming(self, filepath, output_file, is_first_dataset):
         """Process a single JSON file and stream its data to the output file"""
         try:
