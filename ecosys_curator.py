@@ -25,6 +25,124 @@ except ImportError:
 import base64
 from urllib.parse import urlparse, urljoin
 
+import psutil
+import os
+import json
+import gc
+
+class MemoryMonitor:
+    """Monitor system memory usage and provide warnings before memory exhaustion"""
+    
+    def __init__(self, memory_threshold_percent=75, critical_threshold_percent=85):
+        self.memory_threshold_percent = memory_threshold_percent
+        self.critical_threshold_percent = critical_threshold_percent
+        self.peak_memory_mb = 0
+        self.initial_memory_mb = self.get_current_memory_mb()
+        
+    def get_current_memory_mb(self):
+        """Get current process memory usage in MB"""
+        try:
+            process = psutil.Process(os.getpid())
+            memory_mb = process.memory_info().rss / (1024 * 1024)
+            
+            # Track peak memory usage
+            if memory_mb > self.peak_memory_mb:
+                self.peak_memory_mb = memory_mb
+                
+            return memory_mb
+        except:
+            return 0
+            
+    def get_system_memory_percent(self):
+        """Get system memory usage percentage"""
+        try:
+            return psutil.virtual_memory().percent
+        except:
+            return 0
+            
+    def should_pause_processing(self):
+        """Check if processing should be paused due to memory pressure"""
+        system_percent = self.get_system_memory_percent()
+        current_memory_mb = self.get_current_memory_mb()
+        
+        # Check both system memory and process memory growth
+        memory_growth_mb = current_memory_mb - self.initial_memory_mb
+        
+        # Pause if system memory is too high or process has grown significantly
+        return (system_percent > self.critical_threshold_percent or 
+                memory_growth_mb > 1000)  # 1GB growth threshold
+                
+    def get_memory_stats(self):
+        """Get comprehensive memory statistics"""
+        return {
+            'current_mb': self.get_current_memory_mb(),
+            'peak_mb': self.peak_memory_mb,
+            'system_percent': self.get_system_memory_percent(),
+            'growth_mb': self.get_current_memory_mb() - self.initial_memory_mb
+        }
+
+
+class MergeState:
+    """Track merge operation state for resume capability"""
+    
+    def __init__(self, output_filepath):
+        self.output_filepath = output_filepath
+        self.state_filepath = output_filepath + '.merge_state'
+        self.temp_filepath = output_filepath + '.temp'
+        
+        # State variables
+        self.current_file_index = 0
+        self.successful_files = 0
+        self.total_spectra = 0
+        self.completed_files = []
+        
+    def save_state(self):
+        """Save current merge state to file"""
+        try:
+            state_data = {
+                'output_filepath': self.output_filepath,
+                'current_file_index': self.current_file_index,
+                'successful_files': self.successful_files,
+                'total_spectra': self.total_spectra,
+                'completed_files': self.completed_files
+            }
+            
+            with open(self.state_filepath, 'w') as f:
+                json.dump(state_data, f, indent=2)
+                
+        except Exception as e:
+            print(f"DEBUG: Error saving merge state: {e}")
+            
+    def load_state(self):
+        """Load merge state from file if it exists"""
+        try:
+            if os.path.exists(self.state_filepath):
+                with open(self.state_filepath, 'r') as f:
+                    state_data = json.load(f)
+                
+                self.current_file_index = state_data.get('current_file_index', 0)
+                self.successful_files = state_data.get('successful_files', 0)
+                self.total_spectra = state_data.get('total_spectra', 0)
+                self.completed_files = state_data.get('completed_files', [])
+                
+                # Check if temp file exists
+                return os.path.exists(self.temp_filepath)
+                
+        except Exception as e:
+            print(f"DEBUG: Error loading merge state: {e}")
+            
+        return False
+        
+    def cleanup_state(self):
+        """Clean up state and temporary files"""
+        try:
+            if os.path.exists(self.state_filepath):
+                os.remove(self.state_filepath)
+            if os.path.exists(self.temp_filepath):
+                os.remove(self.temp_filepath)
+        except Exception as e:
+            print(f"DEBUG: Error cleaning up merge state: {e}")
+
 class EcosysAPICurator(wx.Frame):
     def __init__(self):
         super().__init__(None, title="EcoSIS API Data Curator", size=(1400, 900))
@@ -2125,9 +2243,279 @@ class EcosysAPICurator(wx.Frame):
             self.download_list.SetItem(index, 1, "Queued")
             self.download_list.SetItem(index, 2, "0%")
             self.download_list.SetItem(index, 3, "Unknown")
+
+    def write_merge_file_header(self, output_file, total_files):
+        """Write the header structure for a new merge file"""
+        output_file.write('{\n')
+        output_file.write('  "merge_info": {\n')
+        output_file.write(f'    "created_date": "{datetime.now().isoformat()}",\n')
+        output_file.write(f'    "source_files": {total_files},\n')
+        output_file.write('    "total_datasets": 0,\n')
+        output_file.write('    "total_spectra": 0,\n')
+        output_file.write('    "memory_optimization": "Memory-safe with auto-pause/resume",\n')
+        output_file.write('    "source": "EcoSIS API Curator - Memory-Safe Merger"\n')
+        output_file.write('  },\n')
+        output_file.write('  "datasets": [\n')
+
+    def process_single_file_streaming_safe(self, filepath, output_file, is_first_dataset, memory_monitor):
+        """Memory-safe version of single file processing"""
+        import gc
+        
+        data = None
+        dataset_info = None
+        spectra = None
+        
+        try:
+            # Check memory before loading file
+            if memory_monitor.should_pause_processing():
+                raise MemoryError("Memory threshold reached before file processing")
+            
+            # Read JSON file with explicit memory management
+            with open(filepath, 'r', encoding='utf-8') as input_file:
+                data = json.load(input_file)
+            
+            dataset_info = data.get('dataset_info', {})
+            spectra = data.get('spectra', [])
+            
+            if not spectra:
+                return 0
+            
+            # Add comma if not the first dataset
+            if not is_first_dataset:
+                output_file.write(',\n')
+            
+            # Write dataset entry header
+            output_file.write('    {\n')
+            output_file.write(f'      "source_file": "{os.path.basename(filepath)}",\n')
+            output_file.write('      "dataset_info": ')
+            
+            # Stream dataset_info directly to minimize memory usage
+            json.dump(dataset_info, output_file, indent=6)
+            output_file.write(',\n')
+            output_file.write(f'      "spectra_count": {len(spectra)},\n')
+            output_file.write('      "spectra": [\n')
+            
+            # Process spectra in ultra-small chunks with memory monitoring
+            spectra_count = len(spectra)
+            chunk_size = 50  # Smaller chunks for memory safety
+            
+            for chunk_start in range(0, spectra_count, chunk_size):
+                # Check memory before each chunk
+                if memory_monitor.should_pause_processing():
+                    raise MemoryError("Memory threshold reached during spectrum processing")
+                
+                chunk_end = min(chunk_start + chunk_size, spectra_count)
+                spectra_chunk = spectra[chunk_start:chunk_end]
+                
+                # Stream each spectrum in the chunk
+                for j, spectrum in enumerate(spectra_chunk):
+                    absolute_index = chunk_start + j
+                    
+                    if absolute_index > 0:
+                        output_file.write(',\n')
+                    output_file.write('        ')
+                    json.dump(spectrum, output_file, separators=(',', ':'))
+                    
+                    # Micro-GC every 25 spectra for memory pressure
+                    if absolute_index > 0 and absolute_index % 25 == 0:
+                        spectrum = None
+                        gc.collect()
+                
+                # Clear chunk and force GC
+                spectra_chunk = None
+                gc.collect()
+                
+                # Flush buffer periodically
+                if chunk_end % 500 == 0:
+                    output_file.flush()
+            
+            output_file.write('\n      ]\n')
+            output_file.write('    }')
+            
+            # Clear all references and return count
+            result_count = len(spectra)
+            spectra = None
+            dataset_info = None
+            data = None
+            gc.collect()
+            
+            return result_count
+            
+        except MemoryError:
+            # Memory threshold reached - clean up and re-raise
+            spectra = None
+            dataset_info = None
+            data = None
+            gc.collect()
+            raise
+            
+        except Exception as e:
+            print(f"DEBUG: Error processing {filepath}: {str(e)}")
+            spectra = None
+            dataset_info = None
+            data = None
+            gc.collect()
+            return 0
+        
+        finally:
+            # Ensure cleanup
+            if 'data' in locals():
+                data = None
+            if 'dataset_info' in locals():
+                dataset_info = None
+            if 'spectra' in locals():
+                spectra = None
+            gc.collect()
+    
+    def perform_memory_safe_merge(self, spectra_files, output_filepath, memory_monitor, 
+                                merge_state, progress_dlg, is_resuming):
+        """Perform the actual merge with memory monitoring and resume capability"""
+        import gc
+        
+        try:
+            # Force initial garbage collection
+            gc.collect()
+            
+            # Determine starting point
+            start_index = merge_state.current_file_index if is_resuming else 0
+            
+            # Open or create output file
+            if is_resuming and os.path.exists(merge_state.temp_filepath):
+                # Resume: copy temp file to final location and continue
+                import shutil
+                shutil.copy2(merge_state.temp_filepath, output_filepath)
+                file_mode = 'r+b'  # Read-write mode for resuming
+            else:
+                file_mode = 'w'  # Write mode for new file
+                merge_state.total_spectra = 0
+                merge_state.successful_files = 0
+            
+            with open(output_filepath, file_mode, encoding='utf-8', buffering=8192) as output_file:
+                if not is_resuming:
+                    # Write opening structure for new file
+                    self.write_merge_file_header(output_file, len(spectra_files))
+                else:
+                    # Position file pointer for resuming
+                    output_file.seek(0, 2)  # Seek to end
+                    # Remove the closing brackets to continue appending
+                    output_file.seek(-6, 2)  # Back up over '\n  ]\n}\n'
+                    output_file.truncate()
+                
+                first_dataset = merge_state.successful_files == 0
+                
+                for i in range(start_index, len(spectra_files)):
+                    filepath = spectra_files[i]
+                    merge_state.current_file_index = i
+                    
+                    # Check memory before processing each file
+                    if memory_monitor.should_pause_processing():
+                        memory_stats = memory_monitor.get_memory_stats()
+                        pause_msg = (f"Memory pressure detected!\n\n"
+                                   f"Current usage: {memory_stats['current_mb']:.1f} MB\n"
+                                   f"Peak usage: {memory_stats['peak_mb']:.1f} MB\n"
+                                   f"System memory: {memory_stats['system_percent']:.1f}%\n\n"
+                                   f"Pausing to prevent system crash.\n"
+                                   f"Progress will be saved and can be resumed.")
+                        
+                        progress_dlg.Update(i, pause_msg)
+                        
+                        # Save current state
+                        merge_state.save_state()
+                        
+                        # Close current file properly for resume
+                        output_file.write('\n  ]\n}\n')
+                        output_file.flush()
+                        
+                        # Create temp backup
+                        import shutil
+                        shutil.copy2(output_filepath, merge_state.temp_filepath)
+                        
+                        # Aggressive cleanup
+                        gc.collect()
+                        gc.collect()
+                        gc.collect()
+                        
+                        # Show memory cleanup dialog
+                        cleanup_msg = (f"Memory cleaned up. Progress saved.\n\n"
+                                     f"Files processed: {merge_state.successful_files}/{len(spectra_files)}\n"
+                                     f"Spectra merged: {merge_state.total_spectra:,}\n\n"
+                                     f"Click OK to continue, or Cancel to stop here.\n"
+                                     f"You can resume later using Tools → Merge Local Spectra.")
+                        
+                        continue_choice = wx.MessageBox(cleanup_msg, "Memory Cleanup Complete", 
+                                                      wx.OK | wx.CANCEL | wx.ICON_INFORMATION)
+                        
+                        if continue_choice != wx.OK:
+                            return False  # User chose to stop
+                        
+                        # Reset memory monitor for next phase
+                        memory_monitor = MemoryMonitor(memory_threshold_percent=80, critical_threshold_percent=85)
+                        
+                        # Reopen file for continued writing
+                        output_file.seek(-6, 2)  # Back up over closing brackets again
+                        output_file.truncate()
+                    
+                    # Update progress with memory info
+                    memory_stats = memory_monitor.get_memory_stats()
+                    progress_msg = (f"Processing {os.path.basename(filepath)}\n"
+                                  f"File {i+1}/{len(spectra_files)} - "
+                                  f"Memory: {memory_stats['current_mb']:.1f}MB "
+                                  f"({memory_stats['system_percent']:.1f}% system)")
+                    
+                    if not progress_dlg.Update(i, progress_msg)[0]:
+                        # User cancelled
+                        merge_state.save_state()
+                        return False
+                    
+                    try:
+                        # Process one file at a time
+                        dataset_spectra_count = self.process_single_file_streaming_safe(
+                            filepath, output_file, first_dataset, memory_monitor)
+                        
+                        if dataset_spectra_count > 0:
+                            merge_state.completed_files.append(os.path.basename(filepath))
+                            merge_state.total_spectra += dataset_spectra_count
+                            merge_state.successful_files += 1
+                            first_dataset = False
+                            
+                            print(f"DEBUG: Processed {dataset_spectra_count} spectra from {os.path.basename(filepath)}")
+                        else:
+                            print(f"DEBUG: Skipping {os.path.basename(filepath)} - no spectra found")
+                    
+                    except Exception as e:
+                        print(f"DEBUG: Error processing {filepath}: {str(e)}")
+                        continue  # Skip problematic files
+                    
+                    finally:
+                        # Aggressive garbage collection after each file
+                        gc.collect()
+                        
+                        # Save state periodically (every 5 files)
+                        if (i + 1) % 5 == 0:
+                            merge_state.save_state()
+                
+                # Close datasets array and file
+                output_file.write('\n  ]\n}\n')
+                output_file.flush()
+            
+            # Update merge info in the file
+            self.update_merge_info_in_file(output_filepath, merge_state.successful_files, 
+                                         len(spectra_files), merge_state.successful_files, 
+                                         merge_state.total_spectra)
+            
+            # Final cleanup
+            gc.collect()
+            
+            return True
+            
+        except Exception as e:
+            print(f"DEBUG: Error in memory-safe merge: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
     
     def on_merge_local_spectra(self, event):
-        """Merge all local spectra JSON files into one consolidated file - Ultra RAM efficient version"""
+        """Merge all local spectra JSON files with memory monitoring and resume capability"""
         import gc  # Import garbage collector at the top
         
         download_path = self.download_path.GetValue()
@@ -2184,122 +2572,59 @@ class EcosysAPICurator(wx.Frame):
         output_filepath = dlg.GetPath()
         dlg.Destroy()
         
+        # Initialize memory monitor and merge state
+        memory_monitor = MemoryMonitor(memory_threshold_percent=80, critical_threshold_percent=85)
+        merge_state = MergeState(output_filepath)
+        
+        # Check for existing state (resume capability)
+        can_resume = merge_state.load_state()
+        if can_resume:
+            resume_msg = (f"Found previous incomplete merge operation:\n\n"
+                         f"Progress: {merge_state.successful_files} files completed\n"
+                         f"Spectra processed: {merge_state.total_spectra:,}\n"
+                         f"Resume from where it stopped?")
+            
+            resume_choice = wx.MessageBox(resume_msg, "Resume Previous Merge?", 
+                                        wx.YES_NO | wx.ICON_QUESTION)
+            if resume_choice != wx.YES:
+                can_resume = False
+                merge_state.cleanup_state()
+        
         # Show progress dialog with memory info
         progress_dlg = wx.ProgressDialog("Merging Spectra Files",
-                                       "Merging with ultra-conservative memory management...",
+                                       "Initializing memory-safe merge operation...",
                                        maximum=len(spectra_files),
                                        parent=self,
                                        style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT)
         
         try:
-            # Force initial garbage collection
-            gc.collect()
-            
-            # Use streaming JSON writing to minimize memory usage
-            total_spectra = 0
-            successful_files = 0
-            dataset_summaries = []  # Store minimal summaries instead of full data
-            
-            # Start writing JSON file
-            with open(output_filepath, 'w', encoding='utf-8', buffering=8192) as output_file:
-                # Write opening structure
-                output_file.write('{\n')
-                output_file.write('  "merge_info": {\n')
-                output_file.write(f'    "created_date": "{datetime.now().isoformat()}",\n')
-                output_file.write(f'    "source_files": {len(spectra_files)},\n')
-                output_file.write('    "total_datasets": 0,\n')  # Will update later
-                output_file.write('    "total_spectra": 0,\n')   # Will update later
-                output_file.write('    "memory_optimization": "Ultra-conservative with aggressive GC",\n')
-                output_file.write('    "source": "EcoSIS API Curator - Local Files Merger (Ultra Memory Efficient)"\n')
-                output_file.write('  },\n')
-                output_file.write('  "datasets": [\n')
-                
-                first_dataset = True
-                
-                for i, filepath in enumerate(spectra_files):
-                    # Update progress with memory management info
-                    progress_msg = f"Processing {os.path.basename(filepath)}\n(File {i+1}/{len(spectra_files)}) - Cleaning memory..."
-                    
-                    if not progress_dlg.Update(i, progress_msg)[0]:
-                        # User cancelled
-                        progress_dlg.Destroy()
-                        # Clean up incomplete file
-                        try:
-                            os.remove(output_filepath)
-                        except:
-                            pass
-                        return
-                    
-                    try:
-                        # Process one file at a time to minimize memory usage
-                        dataset_spectra_count = self.process_single_file_streaming(
-                            filepath, output_file, first_dataset)
-                        
-                        if dataset_spectra_count > 0:
-                            # Store summary info
-                            dataset_summaries.append({
-                                'source_file': os.path.basename(filepath),
-                                'spectra_count': dataset_spectra_count
-                            })
-                            
-                            total_spectra += dataset_spectra_count
-                            successful_files += 1
-                            first_dataset = False
-                            
-                            print(f"DEBUG: Streamed {dataset_spectra_count} spectra from {os.path.basename(filepath)}")
-                        else:
-                            print(f"DEBUG: Skipping {os.path.basename(filepath)} - no spectra found")
-                    
-                    except Exception as e:
-                        print(f"DEBUG: Error processing {filepath}: {str(e)}")
-                        continue  # Skip problematic files
-                    
-                    finally:
-                        # CRITICAL: Aggressive garbage collection after each file
-                        # This is the key enhancement - force cleanup immediately
-                        gc.collect()
-                        
-                        # For extra large files, run multiple GC cycles
-                        file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
-                        if file_size_mb > 100:
-                            gc.collect()  # Second pass for large files
-                            gc.collect()  # Third pass for very large files
-                
-                # Close datasets array and file
-                output_file.write('\n  ]\n')
-                output_file.write('}\n')
-                
-                # Force file buffer flush
-                output_file.flush()
-                
-            # Final garbage collection after file operations complete
-            gc.collect()
+            # Start the memory-safe merge operation
+            success = self.perform_memory_safe_merge(spectra_files, output_filepath, 
+                                                   memory_monitor, merge_state, 
+                                                   progress_dlg, can_resume)
             
             progress_dlg.Destroy()
             
-            # Update merge info in the file (rewrite with correct totals)
-            self.update_merge_info_in_file(output_filepath, successful_files, 
-                                         len(spectra_files), len(dataset_summaries), 
-                                         total_spectra)
-            
-            # Final cleanup before showing results
-            dataset_summaries = None  # Release reference
-            gc.collect()
-            
-            # Show custom results dialog with file manager option
-            merge_percentage = (successful_files * 100) // len(spectra_files) if len(spectra_files) > 0 else 0
-            results_dlg = MergeResultsDialog(self, 
-                                           merge_percentage=merge_percentage,
-                                           successful_files=successful_files,
-                                           total_files=len(spectra_files),
-                                           total_datasets=successful_files,  # Use successful_files since summaries cleared
-                                           total_spectra=total_spectra,
-                                           output_filepath=output_filepath,
-                                           file_size_mb=os.path.getsize(output_filepath) / (1024*1024))
-            results_dlg.ShowModal()
-            results_dlg.Destroy()
-            
-            self.SetStatusText(f"Merged {successful_files} datasets with {total_spectra:,} spectra (ultra memory efficient)")
+            if success:
+                # Show results dialog
+                merge_percentage = (merge_state.successful_files * 100) // len(spectra_files) if len(spectra_files) > 0 else 0
+                results_dlg = MergeResultsDialog(self, 
+                                               merge_percentage=merge_percentage,
+                                               successful_files=merge_state.successful_files,
+                                               total_files=len(spectra_files),
+                                               total_datasets=merge_state.successful_files,
+                                               total_spectra=merge_state.total_spectra,
+                                               output_filepath=output_filepath,
+                                               file_size_mb=os.path.getsize(output_filepath) / (1024*1024))
+                results_dlg.ShowModal()
+                results_dlg.Destroy()
+                
+                # Clean up state files
+                merge_state.cleanup_state()
+                
+                self.SetStatusText(f"Merged {merge_state.successful_files} datasets with {merge_state.total_spectra:,} spectra (memory-safe)")
+            else:
+                self.SetStatusText("Merge operation was cancelled or failed")
             
         except Exception as e:
             progress_dlg.Destroy()
@@ -2311,7 +2636,7 @@ class EcosysAPICurator(wx.Frame):
         finally:
             # Ensure cleanup even if there's an exception
             gc.collect()
-
+            
     def show_memory_warning_dialog(self, large_files, total_size_mb, estimated_ram_usage_mb):
         """Show compact memory warning dialog with scrollable file list"""
         # Calculate dialog size based on main window (75% height)
@@ -2421,7 +2746,7 @@ class EcosysAPICurator(wx.Frame):
         dlg.Destroy()
         
         return result == wx.ID_OK
-
+        
     def process_single_file_streaming(self, filepath, output_file, is_first_dataset):
         """Process a single JSON file and stream its data to the output file"""
         try:
