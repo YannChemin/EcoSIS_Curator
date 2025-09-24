@@ -12,5 +12,5 @@
 ## Memory Management for merging JSON files with very large sizes
 <img src="Screenshot from 2025-09-21 09-11-19.png" alt="Tools->Merge Local Spectra: Memory management">
 
-## Merge spectra
-<img src="Screenshot from 2025-09-24 12-24-57.png" alt="Tools->Merge Local Spectra: Memory management">
+## Merge local spectra JSON creation summary output
+<img src="Screenshot from 2025-09-24 12-24-57.png" alt="Tools->Merge Local Spectra: JSON Summary Output">
