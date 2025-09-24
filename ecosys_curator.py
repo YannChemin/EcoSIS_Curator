@@ -26,11 +26,10 @@ import base64
 from urllib.parse import urlparse, urljoin
 
 import psutil
-import os
-import json
 import gc
-import threading
 import time
+import weakref
+import sys
 
 class BatchProgressDialog(wx.Dialog):
     """Non-blocking progress dialog for batch processing"""
@@ -201,131 +200,19 @@ class BatchProgressDialog(wx.Dialog):
         wx.MessageBox(f"Batch processing failed:\n{error_msg}", 
                      "Processing Error", wx.OK | wx.ICON_ERROR, self)
 
-def start_batch_processing_thread(self, spectra_files, output_dir, files_per_batch):
-    """Start batch processing with responsive progress dialog"""
-    # Store output directory for later use
-    self.last_batch_output_dir = output_dir
-    
-    # Calculate total batches
-    total_batches = (len(spectra_files) + files_per_batch - 1) // files_per_batch
-    
-    # Create and show progress dialog
-    self.progress_dialog = BatchProgressDialog(self, total_batches)
-    self.progress_dialog.Show()
-    
-    # Disable merge controls
-    self.set_merge_controls_enabled(False)
-    
-    # Show initial status
-    self.SetStatusText("Starting batch processing...")
-    
-    # Create and start background thread
-    self.batch_thread = threading.Thread(
-        target=self.batch_processing_worker,
-        args=(spectra_files, output_dir, files_per_batch),
-        daemon=True
-    )
-    self.batch_thread.start()
-
-def batch_processing_worker(self, spectra_files, output_dir, files_per_batch):
-    """Background worker with better progress reporting"""
-    import gc
-    import time
-    
-    try:
-        total_batches = (len(spectra_files) + files_per_batch - 1) // files_per_batch
-        
-        # Initialize progress tracking
-        self.batch_progress = {
-            'current_batch': 0,
-            'total_batches': total_batches,
-            'current_file': 0,
-            'current_batch_files': 0,
-            'successful_batches': 0,
-            'total_datasets': 0,
-            'total_spectra': 0,
-            'current_status': 'Starting batch processing...',
-            'completed': False,
-            'error': None
-        }
-        
-        for batch_num in range(total_batches):
-            # Check for cancellation
-            if hasattr(self, 'progress_dialog') and self.progress_dialog.cancelled:
-                self.batch_progress['error'] = "Cancelled by user"
-                return
-            
-            start_idx = batch_num * files_per_batch
-            end_idx = min((batch_num + 1) * files_per_batch, len(spectra_files))
-            batch_files = spectra_files[start_idx:end_idx]
-            
-            # Update progress
-            self.batch_progress['current_batch'] = batch_num + 1
-            self.batch_progress['current_batch_files'] = len(batch_files)
-            self.batch_progress['current_file'] = 0
-            self.batch_progress['current_status'] = f'Starting batch {batch_num + 1}/{total_batches}...'
-            
-            # Process single batch
-            batch_output = os.path.join(output_dir, f"merged_spectra_batch_{batch_num + 1:03d}.json")
-            batch_datasets, batch_spectra = self.process_single_batch_threaded(batch_files, batch_output)
-            
-            if batch_datasets > 0:
-                self.batch_progress['successful_batches'] += 1
-                self.batch_progress['total_datasets'] += batch_datasets
-                self.batch_progress['total_spectra'] += batch_spectra
-                
-                print(f"DEBUG: Batch {batch_num + 1} complete: {batch_datasets} datasets, {batch_spectra} spectra")
-            
-            # Update status
-            self.batch_progress['current_status'] = f'Completed batch {batch_num + 1}/{total_batches}'
-            
-            # Cleanup and brief pause
-            gc.collect()
-            time.sleep(0.1)
-        
-        # Mark as completed
-        self.batch_progress['completed'] = True
-        self.batch_progress['current_status'] = 'All batches completed successfully!'
-        
-        # Re-enable controls after brief delay
-        wx.CallAfter(self.cleanup_after_batch_completion)
-        
-    except Exception as e:
-        self.batch_progress['error'] = str(e)
-        self.batch_progress['current_status'] = f'Error: {str(e)}'
-        print(f"DEBUG: Batch processing thread error: {str(e)}")
-        
-        # Re-enable controls on error
-        wx.CallAfter(self.cleanup_after_batch_completion)
-
-def cleanup_after_batch_completion(self):
-    """Cleanup after batch processing completes or fails"""
-    # Re-enable merge controls
-    self.set_merge_controls_enabled(True)
-    
-    # Close progress dialog after a delay if still open
-    if hasattr(self, 'progress_dialog') and self.progress_dialog:
-        wx.CallLater(3000, self.close_progress_dialog)  # Auto-close after 3 seconds
-
-def close_progress_dialog(self):
-    """Close progress dialog if it exists"""
-    if hasattr(self, 'progress_dialog') and self.progress_dialog:
-        try:
-            self.progress_dialog.Close()
-            self.progress_dialog = None
-        except:
-            pass
-
 class MemoryMonitor:
-    """Monitor system memory usage and provide warnings before memory exhaustion with OOM protection"""
+    """Monitor system memory usage with tuned thresholds for agricultural data processing"""
     
-    def __init__(self, memory_threshold_percent=65, critical_threshold_percent=75):
-        # Lower thresholds for OOM protection
+    def __init__(self, memory_threshold_percent=60, critical_threshold_percent=75):
+        # Lower thresholds for stability
         self.memory_threshold_percent = memory_threshold_percent
         self.critical_threshold_percent = critical_threshold_percent
         self.peak_memory_mb = 0
         self.initial_memory_mb = self.get_current_memory_mb()
-        self.oom_protection_threshold = 85  # Hard limit to prevent OOM killer
+        self.oom_protection_threshold = 85  # Hard stop threshold
+        
+        # Track objects for cleanup
+        self._tracked_objects = weakref.WeakSet()
         
     def get_current_memory_mb(self):
         """Get current process memory usage in MB"""
@@ -340,7 +227,7 @@ class MemoryMonitor:
             return memory_mb
         except:
             return 0
-            
+    
     def get_system_memory_percent(self):
         """Get system memory usage percentage"""
         try:
@@ -354,55 +241,231 @@ class MemoryMonitor:
             return psutil.virtual_memory().available / (1024 * 1024 * 1024)
         except:
             return 0
-            
-    def should_pause_processing(self):
-        """Check if processing should be paused due to memory pressure with OOM protection"""
-        system_percent = self.get_system_memory_percent()
-        current_memory_mb = self.get_current_memory_mb()
-        available_gb = self.get_available_memory_gb()
-        
-        # Check for OOM killer risk (immediate stop)
-        if system_percent > self.oom_protection_threshold:
-            print(f"DEBUG: OOM protection triggered - system memory at {system_percent}%")
-            return True
-        
-        # Check if available memory is critically low
-        if available_gb < 0.5:  # Less than 500MB available
-            print(f"DEBUG: Critical memory shortage - only {available_gb:.2f}GB available")
-            return True
-        
-        # Check process memory growth
-        memory_growth_mb = current_memory_mb - self.initial_memory_mb
-        
-        # More conservative thresholds for agricultural data processing
-        return (system_percent > self.critical_threshold_percent or 
-                memory_growth_mb > 500 or  # Reduced from 1GB to 500MB
-                current_memory_mb > 800)   # Hard process limit
-                
+    
     def get_memory_stats(self):
-        """Get comprehensive memory statistics including OOM risk assessment"""
-        system_percent = self.get_system_memory_percent()
-        current_mb = self.get_current_memory_mb()
-        available_gb = self.get_available_memory_gb()
-        
-        # Calculate OOM risk level
-        if system_percent > self.oom_protection_threshold or available_gb < 0.3:
-            oom_risk = "CRITICAL"
-        elif system_percent > self.critical_threshold_percent or available_gb < 0.8:
-            oom_risk = "HIGH"
-        elif system_percent > self.memory_threshold_percent or available_gb < 1.5:
-            oom_risk = "MODERATE"
-        else:
-            oom_risk = "LOW"
-        
+        """Get comprehensive memory statistics"""
         return {
-            'current_mb': current_mb,
+            'current_mb': self.get_current_memory_mb(),
             'peak_mb': self.peak_memory_mb,
-            'system_percent': system_percent,
-            'growth_mb': current_mb - self.initial_memory_mb,
-            'available_gb': available_gb,
-            'oom_risk': oom_risk
+            'system_percent': self.get_system_memory_percent(),
+            'available_gb': self.get_available_memory_gb()
         }
+        
+    def emergency_cleanup(self):
+        """Perform emergency memory cleanup"""
+        print("DEBUG: Emergency memory cleanup initiated")
+        
+        # Clear tracked objects
+        for obj in list(self._tracked_objects):
+            try:
+                if hasattr(obj, 'clear'):
+                    obj.clear()
+                elif hasattr(obj, '__dict__'):
+                    obj.__dict__.clear()
+            except:
+                pass
+        
+        # Force garbage collection
+        for _ in range(3):
+            collected = gc.collect()
+            print(f"DEBUG: GC collected {collected} objects")
+        
+        # Clear module caches if available
+        if hasattr(sys, '_clear_type_cache'):
+            sys._clear_type_cache()
+
+    def should_pause_processing(self):
+        """Enhanced memory check with emergency protocols"""
+        try:
+            system_percent = self.get_system_memory_percent()
+            current_memory_mb = self.get_current_memory_mb()
+            available_gb = self.get_available_memory_gb()
+            
+            # Critical memory situation
+            if system_percent > self.oom_protection_threshold:
+                print(f"CRITICAL: System memory at {system_percent}% - initiating emergency cleanup")
+                self.emergency_cleanup()
+                return True
+            
+            # Very low available memory
+            if available_gb < 0.2:  # Less than 200MB available
+                print(f"CRITICAL: Only {available_gb:.2f}GB available - emergency cleanup")
+                self.emergency_cleanup()
+                return True
+                
+            # Process memory growth check
+            memory_growth_mb = current_memory_mb - self.initial_memory_mb
+            
+            # More conservative thresholds
+            if (system_percent > self.critical_threshold_percent or 
+                memory_growth_mb > 500 or  # Reduced from 800MB
+                current_memory_mb > 800):  # Reduced from 1200MB
+                print(f"DEBUG: Memory pause - System: {system_percent}%, Growth: {memory_growth_mb}MB")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            print(f"DEBUG: Memory monitoring error: {e}")
+            # On error, assume we should pause to be safe
+            return True
+            
+    def register_object(self, obj):
+        """Register an object for tracking"""
+        self._tracked_objects.add(obj)
+
+class SafeDataProcessor:
+    """Memory-safe data processing with chunking"""
+    
+    def __init__(self, memory_monitor):
+        self.memory_monitor = memory_monitor
+        self.chunk_size = 50  # Conservative chunk size
+        
+    def process_large_dataset(self, data_items, process_func):
+        """Process large datasets in memory-safe chunks"""
+        results = []
+        
+        try:
+            for i in range(0, len(data_items), self.chunk_size):
+                # Check memory before each chunk
+                if self.memory_monitor.should_pause_processing():
+                    print(f"DEBUG: Pausing at chunk {i//self.chunk_size + 1} due to memory pressure")
+                    break
+                
+                chunk = data_items[i:i + self.chunk_size]
+                
+                try:
+                    chunk_results = []
+                    for item in chunk:
+                        result = process_func(item)
+                        if result:
+                            chunk_results.append(result)
+                        
+                        # Clear reference immediately
+                        item = None
+                    
+                    results.extend(chunk_results)
+                    
+                    # Clear chunk references
+                    chunk = None
+                    chunk_results = None
+                    
+                    # Force GC every 5 chunks
+                    if (i // self.chunk_size) % 5 == 0:
+                        gc.collect()
+                        
+                except Exception as e:
+                    print(f"DEBUG: Error processing chunk {i//self.chunk_size}: {e}")
+                    continue
+            
+            return results
+            
+        except Exception as e:
+            print(f"DEBUG: Fatal error in data processing: {e}")
+            self.memory_monitor.emergency_cleanup()
+            return []
+        finally:
+            # Final cleanup
+            gc.collect()
+
+class SafeJSONProcessor:
+    """Safe JSON processing for large files"""
+    
+    def __init__(self, memory_monitor):
+        self.memory_monitor = memory_monitor
+        
+    def process_json_streaming(self, filepath, output_stream):
+        """Stream JSON processing to avoid loading entire file"""
+        try:
+            import json
+            
+            # Check file size first
+            file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            
+            if file_size_mb > 50:  # Files larger than 50MB
+                print(f"DEBUG: Large file detected ({file_size_mb:.1f}MB) - using streaming")
+                return self.stream_large_json(filepath, output_stream)
+            else:
+                return self.process_small_json(filepath, output_stream)
+                
+        except Exception as e:
+            print(f"DEBUG: JSON processing error for {filepath}: {e}")
+            return 0
+    
+    def stream_large_json(self, filepath, output_stream):
+        """Stream process large JSON files"""
+        import json
+        
+        spectra_count = 0
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                # Try to parse incrementally
+                data = json.load(f)
+                
+                # Process in small batches
+                spectra = data.get('spectra', [])
+                dataset_info = data.get('dataset_info', {})
+                
+                # Clear data reference early
+                data = None
+                
+                if not spectra:
+                    return 0
+                
+                # Write dataset header
+                self.write_dataset_header(output_stream, dataset_info, filepath)
+                
+                # Process spectra in small batches
+                batch_size = 25  # Very small batches for large files
+                
+                for i in range(0, len(spectra), batch_size):
+                    if self.memory_monitor.should_pause_processing():
+                        print(f"DEBUG: Memory pressure - stopping at spectrum {i}")
+                        break
+                    
+                    batch = spectra[i:i + batch_size]
+                    
+                    for j, spectrum in enumerate(batch):
+                        if spectra_count > 0:
+                            output_stream.write(',\n')
+                        
+                        output_stream.write('        ')
+                        json.dump(spectrum, output_stream, separators=(',', ':'))
+                        spectra_count += 1
+                        
+                        # Clear reference
+                        spectrum = None
+                    
+                    # Clear batch
+                    batch = None
+                    gc.collect()
+                
+                # Clear spectra
+                spectra = None
+                gc.collect()
+                
+                return spectra_count
+                
+        except MemoryError:
+            print(f"DEBUG: Memory error processing {filepath}")
+            self.memory_monitor.emergency_cleanup()
+            return 0
+        except Exception as e:
+            print(f"DEBUG: Error streaming {filepath}: {e}")
+            return 0
+    
+    def write_dataset_header(self, output_stream, dataset_info, filepath):
+        """Write dataset header to output stream"""
+        import json
+        import os
+        
+        output_stream.write('    {\n')
+        output_stream.write(f'      "source_file": "{os.path.basename(filepath)}",\n')
+        output_stream.write('      "dataset_info": ')
+        json.dump(dataset_info, output_stream, indent=6)
+        output_stream.write(',\n')
+        output_stream.write('      "spectra": [\n')
 
 class MergeState:
     """Track merge operation state for resume capability"""
@@ -469,16 +532,222 @@ class EcosysAPICurator(wx.Frame):
     def __init__(self):
         super().__init__(None, title="EcoSIS API Data Curator", size=(1400, 900))
         
+        # Thread safety lock
+        self._gui_lock = threading.RLock()
+        self._destroyed = False
+        
         # Initialize variables
         self.api_data = []
         self.filtered_data = []
         self.current_selection = None
         self.download_progress = 0
-        self.dataset_photos = {}  # Store photos by dataset ID
+        self.dataset_photos = {}
+        
+        # Photo download tracking - thread safe
+        self.active_photo_downloads = set()
+        self.photo_download_lock = threading.Lock()
+        self.last_photo_check = {}
         
         self.init_ui()
         self.setup_api_config()
         
+        # Start photo refresh timer with safety check
+        self.setup_photo_refresh_timer()
+        
+        # Bind close event for proper cleanup
+        self.Bind(wx.EVT_CLOSE, self.on_close)
+
+    def thread_safe_photo_download(self, dataset_id, photos):
+        """Thread-safe photo download management"""
+        with self.photo_download_lock:
+            if dataset_id in self.active_photo_downloads:
+                return  # Already downloading
+            self.active_photo_downloads.add(dataset_id)
+        
+        def download_worker():
+            try:
+                # Your existing photo download logic here
+                self.download_photos_for_dataset_worker(dataset_id, photos)
+            finally:
+                with self.photo_download_lock:
+                    self.active_photo_downloads.discard(dataset_id)
+        
+        # Start in daemon thread
+        thread = threading.Thread(target=download_worker, daemon=True)
+        thread.start()
+
+    def thread_safe_update_progress(self, value, message=""):
+        """Thread-safe progress update"""
+        def update_gui():
+            if hasattr(self, 'loading_gauge') and not self._destroyed:
+                self.loading_gauge.SetValue(value)
+            if hasattr(self, 'data_info') and message and not self._destroyed:
+                self.data_info.SetLabel(message)
+                
+        self.safe_call_after(update_gui)
+
+    def cleanup_timers_safe(self):
+        """Safe timer cleanup with exception handling"""
+        timers = [
+            ('photo_refresh_timer', 'photo refresh timer'),
+            ('search_timer', 'search timer'),
+            ('resize_timer', 'resize timer'),
+            ('batch_status_timer', 'batch status timer')
+        ]
+        
+        for timer_name, description in timers:
+            try:
+                if hasattr(self, timer_name):
+                    timer = getattr(self, timer_name)
+                    if timer and hasattr(timer, 'IsRunning') and timer.IsRunning():
+                        print(f"DEBUG: Stopping {description}")
+                        timer.Stop()
+                    # Clear the reference
+                    setattr(self, timer_name, None)
+            except Exception as e:
+                print(f"DEBUG: Error stopping {description}: {e}")
+
+    def cleanup_threads(self):
+        """Clean up background threads"""
+        try:
+            # Mark any active downloads as cancelled
+            self.active_photo_downloads.clear()
+            
+            # Set error state for batch processing to stop gracefully
+            if hasattr(self, 'batch_progress'):
+                self.batch_progress['error'] = "Application closing"
+            
+            # Close progress dialog if open
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                try:
+                    self.progress_dialog.cancelled = True
+                    self.progress_dialog.Close()
+                except:
+                    pass
+                
+        except Exception as e:
+            print(f"DEBUG: Thread cleanup error: {e}")
+
+    def safe_call_after(self, func, *args, **kwargs):
+        """Thread-safe wrapper for wx.CallAfter"""
+        if self._destroyed:
+            return
+            
+        def safe_wrapper():
+            if not self._destroyed:
+                try:
+                    with self._gui_lock:
+                        if not self._destroyed:
+                            func(*args, **kwargs)
+                except Exception as e:
+                    print(f"DEBUG: Safe call after error: {e}")
+        
+        try:
+            wx.CallAfter(safe_wrapper)
+        except RuntimeError:
+            # wxPython may be shutting down
+            pass
+
+    def on_close(self, event):
+        """Enhanced close handler with proper thread cleanup"""
+        print("DEBUG: Starting application shutdown...")
+        
+        # Set destruction flag immediately
+        self._destroyed = True
+        
+        # Stop all background operations
+        with self.photo_download_lock:
+            self.active_photo_downloads.clear()
+        
+        # Stop all timers before destroying the window
+        self.cleanup_timers_safe()
+        
+        # Clean up AUI manager if it exists
+        if hasattr(self, '_mgr') and self._mgr:
+            try:
+                self._mgr.UnInit()
+            except:
+                pass
+        
+        # Save configuration
+        try:
+            self.save_config()
+        except:
+            pass
+        
+        print("DEBUG: Cleanup complete, destroying window...")
+        
+        # Destroy the window
+        self.Destroy()
+
+    def setup_photo_refresh_timer(self):
+        """Setup photo refresh timer with safety checks"""
+        try:
+            self.photo_refresh_timer = wx.Timer(self)
+            self.Bind(wx.EVT_TIMER, self.on_photo_refresh_timer_safe, self.photo_refresh_timer)
+            self.photo_refresh_timer.Start(3000)  # Increased to 3 seconds
+        except Exception as e:
+            print(f"DEBUG: Failed to setup photo refresh timer: {e}")
+            self.photo_refresh_timer = None
+    
+    def on_photo_refresh_timer_safe(self, event):
+        """Timer callback with destruction check"""
+        # Check if object is being destroyed
+        if self._destroyed or not self:
+            return
+            
+        try:
+            if not hasattr(self, 'dataset_photos') or not self.dataset_photos:
+                return
+            
+            # Check if we have a currently selected dataset
+            if not hasattr(self, 'current_selection') or not self.current_selection:
+                return
+            
+            current_dataset_id = self.current_selection.get('_id', '')
+            if not current_dataset_id or current_dataset_id not in self.dataset_photos:
+                return
+            
+            # Check if any photos for the current dataset have newly completed
+            photos = self.dataset_photos[current_dataset_id]
+            has_updates = False
+            newly_completed = []
+            
+            for photo in photos:
+                if (photo.get('download_status') == 'completed' and 
+                    photo.get('local_path') and 
+                    os.path.exists(photo.get('local_path'))):
+                    
+                    last_check_time = self.last_photo_check.get(current_dataset_id, 0)
+                    file_mod_time = os.path.getmtime(photo.get('local_path'))
+                    
+                    if file_mod_time > last_check_time:
+                        has_updates = True
+                        newly_completed.append(photo)
+            
+            # Update last check time
+            self.last_photo_check[current_dataset_id] = time.time()
+            
+            # If we have updates, refresh the display
+            if has_updates and not self._destroyed:
+                print(f"DEBUG: {len(newly_completed)} new photos completed for dataset {current_dataset_id}")
+                wx.CallAfter(self.safe_refresh_current_photo_display)
+                
+        except Exception as e:
+            # Silently handle exceptions during timer callback
+            print(f"DEBUG: Timer callback error (likely cleanup): {e}")
+  
+    def safe_refresh_current_photo_display(self):
+        """Safely refresh photo display with destruction check"""
+        if self._destroyed or not self:
+            return
+            
+        try:
+            if hasattr(self, 'current_selection') and self.current_selection:
+                self.display_photos_for_dataset(self.current_selection)
+        except Exception as e:
+            print(f"DEBUG: Photo display refresh error: {e}")
+
     def init_ui(self):
         """Initialize the user interface with AUI manager or basic layout"""
         if aui:
@@ -508,7 +777,7 @@ class EcosysAPICurator(wx.Frame):
         
         if self._mgr:
             self._mgr.Update()
-        
+    
     def create_menu_bar(self):
         """Create menu bar with file, view, and tools menus"""
         menubar = wx.MenuBar()
@@ -817,20 +1086,28 @@ class EcosysAPICurator(wx.Frame):
                 wx.CallAfter(self.initial_plot_resize)
         
     def on_spectral_panel_resize(self, event):
-        """Handle spectral panel resize events with timer to avoid excessive redraws"""
+        """Handle spectral panel resize events with timer and destruction check"""
+        if self._destroyed:
+            return
+            
         # Stop previous timer if running
-        if hasattr(self, 'resize_timer') and self.resize_timer.IsRunning():
+        if hasattr(self, 'resize_timer') and self.resize_timer and self.resize_timer.IsRunning():
             self.resize_timer.Stop()
         
-        # Start timer for 150ms delay (only redraw after user stops resizing)
-        if hasattr(self, 'resize_timer'):
+        # Start timer for 150ms delay
+        if hasattr(self, 'resize_timer') and self.resize_timer:
             self.resize_timer.Start(150, wx.TIMER_ONE_SHOT)
         event.Skip()
         
     def on_resize_timer(self, event):
-        """Called when resize timer expires - perform the actual plot resize"""
-        self.refresh_spectral_plot()
-        
+        """Called when resize timer expires with destruction check"""
+        if self._destroyed:
+            return
+        try:
+            self.refresh_spectral_plot()
+        except Exception as e:
+            print(f"DEBUG: Resize timer error: {e}")
+
     def refresh_spectral_plot(self):
         """Refresh spectral plot with current dimensions using cached data"""
         if hasattr(self, 'spectral_figure') and hasattr(self, 'spectral_canvas'):
@@ -986,9 +1263,9 @@ class EcosysAPICurator(wx.Frame):
                          Bottom().Layer(1).Position(1).
                          CloseButton(False).MaximizeButton(True).
                          BestSize((-1, 200)))
-        
+
     def setup_api_config(self):
-        """Setup default API configuration"""
+        """Setup default API configuration with proper timer initialization"""
         # Set default EcoSIS API URL
         self.url_text.SetValue("https://ecosis.org")
         
@@ -1008,6 +1285,11 @@ class EcosysAPICurator(wx.Frame):
         self.all_organizations = set()
         self.all_themes = set()
         
+        # Initialize timers with None check
+        self.search_timer = None
+        self.resize_timer = None
+        self.batch_status_timer = None
+        
         # Search timer to prevent too frequent filtering
         self.search_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.on_search_timer, self.search_timer)
@@ -1024,9 +1306,9 @@ class EcosysAPICurator(wx.Frame):
         
         # Check for existing local data
         self.check_local_data()
-        
+
     def extract_photos_from_dataset(self, dataset):
-        """Extract photo URLs from dataset metadata"""
+        """Extract photo URLs from dataset metadata and trigger immediate download"""
         photos = []
         dataset_id = dataset.get('_id', '')
         
@@ -1046,7 +1328,9 @@ class EcosysAPICurator(wx.Frame):
                         photos.append({
                             'url': photo_data,
                             'title': f"Dataset Photo",
-                            'source': 'dataset_metadata'
+                            'source': 'dataset_metadata',
+                            'local_path': None,
+                            'download_status': 'pending'
                         })
                     elif isinstance(photo_data, list):
                         for i, photo_url in enumerate(photo_data):
@@ -1054,7 +1338,9 @@ class EcosysAPICurator(wx.Frame):
                                 photos.append({
                                     'url': photo_url,
                                     'title': f"Dataset Photo {i+1}",
-                                    'source': 'dataset_metadata'
+                                    'source': 'dataset_metadata',
+                                    'local_path': None,
+                                    'download_status': 'pending'
                                 })
             
             # Check EcoSIS specific metadata
@@ -1066,13 +1352,18 @@ class EcosysAPICurator(wx.Frame):
                         photos.append({
                             'url': photo_data,
                             'title': f"EcoSIS Photo",
-                            'source': 'ecosis_metadata'
+                            'source': 'ecosis_metadata',
+                            'local_path': None,
+                            'download_status': 'pending'
                         })
             
             # Store photos for this dataset
             if photos:
                 self.dataset_photos[dataset_id] = photos
                 print(f"DEBUG: Found {len(photos)} photos for dataset {dataset_id}")
+                
+                # Immediately start downloading photos in background
+                self.download_photos_for_dataset_immediate(dataset, photos)
                 
         except Exception as e:
             print(f"DEBUG: Error extracting photos from dataset {dataset_id}: {e}")
@@ -1105,60 +1396,267 @@ class EcosysAPICurator(wx.Frame):
                 return True
                 
         return False
-        
-    def download_photos_for_dataset(self, dataset):
-        """Download photos for a dataset in background thread"""
+
+    def download_photos_for_dataset_immediate(self, dataset, photos):
+        """Download photos immediately when detected - with progress tracking"""
         dataset_id = dataset.get('_id', '')
-        if dataset_id not in self.dataset_photos:
-            return
-            
-        def download_photos():
-            download_path = os.path.join(self.download_path.GetValue(), "photos", dataset_id)
-            os.makedirs(download_path, exist_ok=True)
-            
-            for i, photo_info in enumerate(self.dataset_photos[dataset_id]):
-                try:
-                    response = requests.get(photo_info['url'], timeout=30)
-                    if response.status_code == 200:
-                        # Determine file extension from content type or URL
-                        content_type = response.headers.get('content-type', '')
-                        if 'jpeg' in content_type or 'jpg' in content_type:
-                            ext = '.jpg'
-                        elif 'png' in content_type:
-                            ext = '.png'
-                        elif 'gif' in content_type:
-                            ext = '.gif'
-                        else:
-                            # Try to extract from URL
-                            parsed_url = urlparse(photo_info['url'])
-                            path = parsed_url.path.lower()
-                            for img_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
-                                if path.endswith(img_ext):
-                                    ext = img_ext
-                                    break
-                            else:
-                                ext = '.jpg'  # Default fallback
+        
+        # Add to active downloads tracking
+        with self.photo_download_lock:
+            if dataset_id in self.active_photo_downloads:
+                return  # Already downloading
+            self.active_photo_downloads.add(dataset_id)
+        
+        def download_worker():
+            try:
+                download_path = os.path.join(self.download_path.GetValue(), "photos", dataset_id)
+                os.makedirs(download_path, exist_ok=True)
+                
+                total_photos = len(photos)
+                completed_count = 0
+                
+                for i, photo_info in enumerate(photos):
+                    try:
+                        print(f"DEBUG: Downloading photo {i+1}/{total_photos} for dataset {dataset_id}")
+                        photo_info['download_status'] = 'downloading'
+                        photo_info['download_progress'] = 0
                         
-                        filename = f"photo_{i+1}{ext}"
-                        filepath = os.path.join(download_path, filename)
+                        # Set timeout and headers for better compatibility
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'Connection': 'keep-alive',
+                            'Upgrade-Insecure-Requests': '1'
+                        }
                         
-                        with open(filepath, 'wb') as f:
-                            f.write(response.content)
+                        response = requests.get(photo_info['url'], timeout=30, headers=headers, 
+                                              stream=True, allow_redirects=True)
+                        
+                        if response.status_code == 200:
+                            # Get total size if available
+                            total_size = int(response.headers.get('content-length', 0))
                             
-                        # Update photo info with local path
-                        photo_info['local_path'] = filepath
-                        
-                        print(f"DEBUG: Downloaded photo {i+1} for dataset {dataset_id}")
-                        
-                except Exception as e:
-                    print(f"DEBUG: Error downloading photo {i+1} for dataset {dataset_id}: {e}")
+                            # Determine file extension
+                            content_type = response.headers.get('content-type', '').lower()
+                            if 'jpeg' in content_type or 'jpg' in content_type:
+                                ext = '.jpg'
+                            elif 'png' in content_type:
+                                ext = '.png'
+                            elif 'gif' in content_type:
+                                ext = '.gif'
+                            elif 'webp' in content_type:
+                                ext = '.webp'
+                            else:
+                                # Try to extract from URL
+                                parsed_url = urlparse(photo_info['url'])
+                                path = parsed_url.path.lower()
+                                for img_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']:
+                                    if path.endswith(img_ext):
+                                        ext = img_ext
+                                        break
+                                else:
+                                    ext = '.jpg'  # Default fallback
+                            
+                            filename = f"photo_{i+1:02d}{ext}"
+                            filepath = os.path.join(download_path, filename)
+                            
+                            # Download with progress tracking
+                            downloaded_size = 0
+                            with open(filepath, 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        f.write(chunk)
+                                        downloaded_size += len(chunk)
+                                        
+                                        # Update progress
+                                        if total_size > 0:
+                                            progress = int((downloaded_size * 100) / total_size)
+                                            photo_info['download_progress'] = progress
+                            
+                            # Verify the file was downloaded successfully
+                            if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                                # Update photo info with local path
+                                photo_info['local_path'] = filepath
+                                photo_info['download_status'] = 'completed'
+                                photo_info['download_progress'] = 100
+                                photo_info['file_size'] = os.path.getsize(filepath)
+                                photo_info['download_timestamp'] = time.time()
+                                
+                                completed_count += 1
+                                
+                                print(f"DEBUG: Successfully downloaded photo {i+1} for dataset {dataset_id} -> {filename} ({photo_info['file_size']} bytes)")
+                            else:
+                                print(f"DEBUG: Download verification failed for photo {i+1} for dataset {dataset_id}")
+                                photo_info['download_status'] = 'failed_verification'
+                                
+                        else:
+                            print(f"DEBUG: Failed to download photo {i+1} for dataset {dataset_id}: HTTP {response.status_code}")
+                            photo_info['download_status'] = f'failed_http_{response.status_code}'
+                            
+                    except requests.exceptions.Timeout:
+                        print(f"DEBUG: Timeout downloading photo {i+1} for dataset {dataset_id}")
+                        photo_info['download_status'] = 'failed_timeout'
+                    except requests.exceptions.ConnectionError:
+                        print(f"DEBUG: Connection error downloading photo {i+1} for dataset {dataset_id}")
+                        photo_info['download_status'] = 'failed_connection'
+                    except Exception as e:
+                        print(f"DEBUG: Error downloading photo {i+1} for dataset {dataset_id}: {e}")
+                        photo_info['download_status'] = 'failed_error'
+                    
+                    # Brief pause between downloads to be server-friendly
+                    time.sleep(0.5)
+                
+                print(f"DEBUG: Photo download complete for dataset {dataset_id}: {completed_count}/{total_photos} successful")
+                
+            except Exception as e:
+                print(f"DEBUG: Error in photo download worker for dataset {dataset_id}: {e}")
+            finally:
+                # Remove from active downloads
+                with self.photo_download_lock:
+                    self.active_photo_downloads.discard(dataset_id)
         
         # Start download in background thread
-        download_thread = threading.Thread(target=download_photos, daemon=True)
+        download_thread = threading.Thread(target=download_worker, daemon=True)
         download_thread.start()
+
+    def display_primary_photo(self, photo_info):
+        """Display the first downloaded photo prominently"""
+        try:
+            if not Image:
+                return
+                
+            # Create primary photo panel
+            primary_panel = wx.Panel(self.photo_scroll)
+            primary_sizer = wx.BoxSizer(wx.VERTICAL)
+            
+            # Primary photo title
+            primary_title = wx.StaticText(primary_panel, label="📸 Primary Photo")
+            primary_title.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            primary_sizer.Add(primary_title, 0, wx.ALL, 5)
+            
+            # Load and display image
+            img = Image.open(photo_info['local_path'])
+            
+            # Calculate size to fit in available space (max 320x240)
+            img_width, img_height = img.size
+            max_width, max_height = 320, 240
+            
+            # Calculate scaling factor
+            scale_w = max_width / img_width
+            scale_h = max_height / img_height
+            scale = min(scale_w, scale_h, 1.0)  # Don't upscale
+            
+            new_width = int(img_width * scale)
+            new_height = int(img_height * scale)
+            
+            # Resize image
+            img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Convert to wx.Image
+            wx_img = wx.Image(new_width, new_height)
+            wx_img.SetData(img_resized.convert('RGB').tobytes())
+            
+            # Create bitmap and display
+            bitmap = wx.Bitmap(wx_img)
+            img_ctrl = wx.StaticBitmap(primary_panel, bitmap=bitmap)
+            
+            # Add border for better visual separation
+            img_ctrl.SetBackgroundColour(wx.Colour(245, 245, 245))
+            
+            primary_sizer.Add(img_ctrl, 0, wx.ALIGN_CENTER|wx.ALL, 10)
+            
+            # Image info
+            file_size_kb = photo_info.get('file_size', 0) / 1024
+            img_info = f"{img_width}x{img_height} pixels, {file_size_kb:.1f} KB"
+            info_label = wx.StaticText(primary_panel, label=img_info)
+            info_label.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+            primary_sizer.Add(info_label, 0, wx.ALIGN_CENTER|wx.ALL, 2)
+            
+            primary_panel.SetSizer(primary_sizer)
+            self.photo_panel_sizer.Add(primary_panel, 0, wx.EXPAND|wx.ALL, 5)
+            
+        except Exception as e:
+            print(f"DEBUG: Error displaying primary photo: {e}")
+            error_label = wx.StaticText(self.photo_scroll, label="Error loading primary photo")
+            self.photo_panel_sizer.Add(error_label, 0, wx.ALL, 5)
+
+    def display_photo_list(self, photos):
+        """Display compact list of all photos with progress indicators"""
+        list_title = wx.StaticText(self.photo_scroll, label="All Photos:")
+        list_title.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        self.photo_panel_sizer.Add(list_title, 0, wx.ALL, 5)
+        
+        for i, photo_info in enumerate(photos):
+            # Create compact photo entry
+            photo_panel = wx.Panel(self.photo_scroll)
+            photo_sizer = wx.BoxSizer(wx.HORIZONTAL)
+            
+            # Status indicator with more detailed states
+            status = photo_info.get('download_status', 'unknown')
+            if status == 'completed':
+                status_symbol = "✓"
+                status_color = wx.Colour(0, 150, 0)
+            elif status == 'downloading':
+                progress = photo_info.get('download_progress', 0)
+                status_symbol = f"⬇{progress}%"
+                status_color = wx.Colour(0, 100, 200)
+            elif status == 'pending':
+                status_symbol = "⏳"
+                status_color = wx.Colour(150, 150, 0)
+            elif status.startswith('failed_'):
+                status_symbol = "✗"
+                status_color = wx.Colour(200, 0, 0)
+            else:
+                status_symbol = "?"
+                status_color = wx.Colour(100, 100, 100)
+            
+            status_label = wx.StaticText(photo_panel, label=status_symbol)
+            status_label.SetForegroundColour(status_color)
+            status_label.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            photo_sizer.Add(status_label, 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)
+            
+            # Photo info with file details
+            info_text = f"{i+1}. {photo_info['title']}"
+            if photo_info.get('local_path'):
+                filename = os.path.basename(photo_info['local_path'])
+                file_size = photo_info.get('file_size', 0)
+                if file_size > 0:
+                    size_kb = file_size / 1024
+                    info_text += f" ({filename}, {size_kb:.1f}KB)"
+                else:
+                    info_text += f" ({filename})"
+            elif status == 'downloading':
+                info_text += f" (downloading...)"
+            
+            info_label = wx.StaticText(photo_panel, label=info_text)
+            info_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            photo_sizer.Add(info_label, 1, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 5)
+            
+            # Action button
+            if status == 'completed' and photo_info.get('local_path'):
+                view_btn = wx.Button(photo_panel, label="View", size=(50, 25))
+                view_btn.photo_path = photo_info['local_path']
+                view_btn.Bind(wx.EVT_BUTTON, self.on_view_photo)
+                photo_sizer.Add(view_btn, 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 2)
+            elif status == 'downloading':
+                # Show progress bar for downloading photos
+                progress = photo_info.get('download_progress', 0)
+                progress_gauge = wx.Gauge(photo_panel, range=100, size=(60, 20))
+                progress_gauge.SetValue(progress)
+                photo_sizer.Add(progress_gauge, 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 2)
+            else:
+                open_btn = wx.Button(photo_panel, label="URL", size=(50, 25))
+                open_btn.photo_url = photo_info['url']
+                open_btn.Bind(wx.EVT_BUTTON, self.on_open_photo_url)
+                photo_sizer.Add(open_btn, 0, wx.ALIGN_CENTER_VERTICAL|wx.ALL, 2)
+            
+            photo_panel.SetSizer(photo_sizer)
+            self.photo_panel_sizer.Add(photo_panel, 0, wx.EXPAND|wx.ALL, 2)
         
     def display_photos_for_dataset(self, dataset):
-        """Display photos for the selected dataset"""
+        """Display photos for the selected dataset with automatic first photo display"""
         if not dataset:
             return
             
@@ -1181,62 +1679,42 @@ class EcosysAPICurator(wx.Frame):
             no_photos_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
             self.photo_panel_sizer.Add(no_photos_label, 0, wx.ALIGN_CENTER|wx.ALL, 10)
         else:
-            # Display photos
-            for i, photo_info in enumerate(photos):
-                try:
-                    # Create a panel for each photo
-                    photo_panel = wx.Panel(self.photo_scroll)
-                    photo_sizer = wx.BoxSizer(wx.VERTICAL)
-                    
-                    # Photo title
-                    photo_title = wx.StaticText(photo_panel, label=photo_info['title'])
-                    photo_title.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-                    photo_sizer.Add(photo_title, 0, wx.ALL, 5)
-                    
-                    # Check if we have a local copy
-                    if 'local_path' in photo_info and os.path.exists(photo_info['local_path']):
-                        try:
-                            if Image:
-                                # Load and resize image
-                                img = Image.open(photo_info['local_path'])
-                                img.thumbnail((280, 200), Image.Resampling.LANCZOS)
-                                
-                                # Convert to wx.Image
-                                wx_img = wx.Image(img.size[0], img.size[1])
-                                wx_img.SetData(img.convert('RGB').tobytes())
-                                
-                                # Create bitmap and display
-                                bitmap = wx.Bitmap(wx_img)
-                                img_ctrl = wx.StaticBitmap(photo_panel, bitmap=bitmap)
-                                photo_sizer.Add(img_ctrl, 0, wx.ALIGN_CENTER|wx.ALL, 5)
-                            
-                        except Exception as e:
-                            print(f"DEBUG: Error loading local image: {e}")
-                            # Fallback to URL link
-                            url_link = wx.StaticText(photo_panel, label=f"Local image error, URL: {photo_info['url'][:50]}...")
-                            photo_sizer.Add(url_link, 0, wx.ALL, 5)
-                    else:
-                        # Show URL link
-                        url_link = wx.StaticText(photo_panel, label=f"URL: {photo_info['url'][:50]}...")
-                        url_link.SetFont(wx.Font(8, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
-                        photo_sizer.Add(url_link, 0, wx.ALL, 5)
-                        
-                        # Add "Open URL" button
-                        open_btn = wx.Button(photo_panel, label="Open in Browser")
-                        open_btn.photo_url = photo_info['url']  # Store URL in button
-                        open_btn.Bind(wx.EVT_BUTTON, self.on_open_photo_url)
-                        photo_sizer.Add(open_btn, 0, wx.ALIGN_CENTER|wx.ALL, 5)
-                    
-                    photo_panel.SetSizer(photo_sizer)
-                    self.photo_panel_sizer.Add(photo_panel, 0, wx.EXPAND|wx.ALL, 5)
-                    
-                    # Add separator line
-                    if i < len(photos) - 1:
-                        line = wx.StaticLine(self.photo_scroll, style=wx.LI_HORIZONTAL)
-                        self.photo_panel_sizer.Add(line, 0, wx.EXPAND|wx.ALL, 5)
+            # Display status and first available photo prominently
+            status_counts = {}
+            for photo in photos:
+                status = photo.get('download_status', 'unknown')
+                status_counts[status] = status_counts.get(status, 0) + 1
+            
+            status_text = f"Photos found: {len(photos)} total"
+            if 'completed' in status_counts:
+                status_text += f", {status_counts['completed']} downloaded"
+            if 'downloading' in status_counts:
+                status_text += f", {status_counts['downloading']} downloading"
+            if 'pending' in status_counts:
+                status_text += f", {status_counts['pending']} pending"
                 
-                except Exception as e:
-                    print(f"DEBUG: Error displaying photo {i+1}: {e}")
+            status_label = wx.StaticText(self.photo_scroll, label=status_text)
+            status_label.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_ITALIC, wx.FONTWEIGHT_NORMAL))
+            self.photo_panel_sizer.Add(status_label, 0, wx.ALL, 5)
+            
+            # Find and display the first successfully downloaded photo prominently
+            first_downloaded_photo = None
+            for photo in photos:
+                if (photo.get('download_status') == 'completed' and 
+                    photo.get('local_path') and 
+                    os.path.exists(photo.get('local_path'))):
+                    first_downloaded_photo = photo
+                    break
+            
+            if first_downloaded_photo:
+                self.display_primary_photo(first_downloaded_photo)
+            
+            # Add separator
+            separator = wx.StaticLine(self.photo_scroll, style=wx.LI_HORIZONTAL)
+            self.photo_panel_sizer.Add(separator, 0, wx.EXPAND|wx.ALL, 10)
+            
+            # Display all photos in compact list
+            self.display_photo_list(photos)
         
         # Refresh layout
         self.photo_scroll.SetSizer(self.photo_panel_sizer)
@@ -1321,7 +1799,8 @@ class EcosysAPICurator(wx.Frame):
         wx.CallAfter(self.load_api_data_threaded)
         
     def load_api_data_threaded(self):
-        """Load API data in a separate thread to avoid blocking UI"""
+        """Load API data in a separate thread with safe callbacks"""
+        self.thread_safe_update_progress(0, "Connecting to API...")
         loading_thread = threading.Thread(target=self.load_api_data)
         loading_thread.daemon = True
         loading_thread.start()
@@ -1341,8 +1820,8 @@ class EcosysAPICurator(wx.Frame):
             batch_size = 100  # Load in batches of 100
             start = 0
             
-            wx.CallAfter(self.data_info.SetLabel, "Loading datasets...")
-            wx.CallAfter(self.loading_gauge.SetValue, 0)
+            self.safe_call_after(self.data_info.SetLabel, "Loading datasets...")
+            self.safe_call_after(self.loading_gauge.SetValue, 0)
             
             while True:
                 # Prepare query parameters for current batch
@@ -1373,15 +1852,14 @@ class EcosysAPICurator(wx.Frame):
                     # Update progress
                     total = data.get('total', len(all_datasets))
                     progress = min(100, (len(all_datasets) * 100) // total) if total > 0 else 100
-                    wx.CallAfter(self.loading_gauge.SetValue, progress)
-                    wx.CallAfter(self.data_info.SetLabel, f"Loaded {len(all_datasets)} of {total} datasets")
+                    self.thread_safe_update_progress(progress, f"Loaded {len(all_datasets)} of {total} datasets")
                     
                     # If we got fewer items than requested, we've reached the end
                     if len(items) < batch_size:
                         break
                         
                 else:
-                    wx.CallAfter(self.SetStatusText, f"API Error: HTTP {response.status_code}")
+                    self.safe_call_after(self.SetStatusText, f"API Error: HTTP {response.status_code}")
                     return
             
             # Update data
@@ -1393,41 +1871,17 @@ class EcosysAPICurator(wx.Frame):
             self.collect_organizations()
             self.collect_themes()
             
-            # Download photos for all datasets in background
-            wx.CallAfter(self.download_all_photos)
-            
-            # Update UI
-            wx.CallAfter(self.update_data_grid)
-            wx.CallAfter(self.update_organization_combobox)
-            wx.CallAfter(self.update_theme_combobox)
-            wx.CallAfter(self.SetStatusText, f"Loaded {len(self.api_data)} datasets and {len(self.dataset_photos)} with photos")
-            wx.CallAfter(self.data_info.SetLabel, f"Loaded {len(self.api_data)} datasets")
-            wx.CallAfter(self.loading_gauge.SetValue, 100)
-            
+            # Thread-safe updates
+            self.safe_call_after(self.update_data_grid)
+            self.safe_call_after(self.update_organization_combobox)
+            self.thread_safe_update_progress(100, f"Loaded {len(self.api_data)} datasets")
+
         except requests.RequestException as e:
-            wx.CallAfter(self.SetStatusText, f"Connection error: {str(e)}")
-            wx.CallAfter(self.data_info.SetLabel, "Connection error")
+            self.safe_call_after(self.SetStatusText, f"Connection error: {str(e)}")
+            self.thread_safe_update_progress(0, "Connection error")
         except Exception as e:
-            wx.CallAfter(self.SetStatusText, f"Error: {str(e)}")
-            wx.CallAfter(self.data_info.SetLabel, f"Error: {str(e)}")
-            
-    def download_all_photos(self):
-        """Download photos for all datasets that have them"""
-        def download_worker():
-            for dataset_id, photos in self.dataset_photos.items():
-                # Find the dataset
-                dataset = None
-                for d in self.api_data:
-                    if d.get('_id') == dataset_id:
-                        dataset = d
-                        break
-                
-                if dataset:
-                    self.download_photos_for_dataset(dataset)
-        
-        # Start background download
-        download_thread = threading.Thread(target=download_worker, daemon=True)
-        download_thread.start()
+            self.safe_call_after(self.SetStatusText, f"Error: {str(e)}")
+            self.thread_safe_update_progress(0, f"Error: {str(e)}")
 
     def update_data_grid(self):
         """Update the data grid with current EcoSIS data including checkboxes and highlighting"""
@@ -1491,4 +1945,1614 @@ class EcosysAPICurator(wx.Frame):
             
             # Column 6: Theme - use Theme from main dataset
             theme_list = dataset.get('Theme', [])
-           
+            if isinstance(theme_list, list):
+                theme_str = ', '.join(str(t) for t in theme_list[:2] if t)  # Show first 2 themes
+            elif isinstance(theme_list, str):
+                theme_str = theme_list
+            else:
+                # Fallback to Category if Theme is not available
+                category_list = dataset.get('Category', [])
+                if isinstance(category_list, list):
+                    theme_str = ', '.join(str(c) for c in category_list[:2] if c)
+                elif isinstance(category_list, str):
+                    theme_str = category_list
+                else:
+                    theme_str = ''
+            self.data_grid.SetCellValue(i, 6, theme_str)
+            
+            # Column 7: Status
+            status = "Downloaded" if is_local else "Available"
+            self.data_grid.SetCellValue(i, 7, status)
+            
+            # Highlight row if data is available locally
+            if is_local:
+                self.highlight_local_row(i)
+        
+    def check_local_data(self):
+        """Check which datasets' spectral JSON files are available locally"""
+        download_path = self.download_path.GetValue()
+        
+        if not os.path.exists(download_path):
+            return
+            
+        self.local_datasets = set()  # Reset the set
+        
+        try:
+            for filename in os.listdir(download_path):
+                if filename.startswith('spectra_') and filename.endswith('.json'):
+                    # Extract dataset name from filename
+                    dataset_name = filename[8:-5]  # Remove 'spectra_' and '.json'
+                    
+                    # Store both the clean filename version and various title variations
+                    self.local_datasets.add(dataset_name)
+                    
+                    # Convert underscores back to spaces for matching
+                    dataset_name_spaced = dataset_name.replace('_', ' ')
+                    self.local_datasets.add(dataset_name_spaced)
+                    
+                    # Also store the original filename without extension for exact matching
+                    self.local_datasets.add(filename[:-5])  # Remove just .json
+                    
+        except OSError as e:
+            print(f"DEBUG: Error scanning directory: {e}")
+        
+    def on_grid_cell_click(self, event):
+        """Handle grid cell clicks, especially for checkbox column"""
+        row = event.GetRow()
+        col = event.GetCol()
+        
+        if col == 0:  # Checkbox column
+            if 0 <= row < len(self.filtered_data):
+                dataset = self.filtered_data[row]
+                current_value = self.data_grid.GetCellValue(row, col)
+                
+                if current_value == "1":
+                    # Unchecking - user wants to remove local data (optional feature)
+                    pass  # For now, just allow unchecking
+                else:
+                    # Checking - user wants to download
+                    self.download_single_dataset(dataset, row)
+        else:
+            # For other columns, handle normal selection
+            if 0 <= row < len(self.filtered_data):
+                dataset = self.filtered_data[row]
+                self.current_selection = dataset
+                
+                # Check if local data exists
+                is_local = self.is_dataset_local(dataset)
+                
+                self.update_metadata_display()
+                title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
+                self.selection_info.SetLabel(f"Selected: {title}")
+                
+                # Automatically display photos for the selected dataset
+                wx.CallAfter(self.display_photos_for_dataset, dataset)
+        
+        event.Skip()
+        
+    # Also update the grid selection handler to trigger photo display
+    def on_grid_select(self, event):
+        """Handle grid row selection with automatic photo display"""
+        row = event.GetRow()
+        if 0 <= row < len(self.filtered_data):
+            self.current_selection = self.filtered_data[row]
+            self.update_metadata_display()
+            title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
+            self.selection_info.SetLabel(f"Selected: {title}")
+            
+            # Display photos automatically with first photo prominent
+            wx.CallAfter(self.display_photos_for_dataset, self.current_selection)
+
+    def on_refresh_photos(self, event):
+        """Refresh photos for the current selection"""
+        if self.current_selection:
+            self.display_photos_for_dataset(self.current_selection)
+        else:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+
+    def on_view_photo(self, event):
+        """Open downloaded photo in system image viewer"""
+        btn = event.GetEventObject()
+        if hasattr(btn, 'photo_path'):
+            try:
+                import subprocess
+                import platform
+                
+                system = platform.system()
+                if system == "Windows":
+                    subprocess.run(['start', btn.photo_path], shell=True, check=False)
+                elif system == "Darwin":  # macOS
+                    subprocess.run(['open', btn.photo_path], check=False)
+                elif system == "Linux":
+                    subprocess.run(['xdg-open', btn.photo_path], check=False)
+            except Exception as e:
+                print(f"DEBUG: Error opening photo: {e}")
+                wx.MessageBox(f"Could not open photo:\n{str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def on_open_dataset_page(self, event):
+        """Open the EcoSIS dataset page in web browser"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+            
+        dataset_id = self.current_selection.get('_id')
+        if dataset_id:
+            url = f"https://ecosis.org/package/{dataset_id}"
+            import webbrowser
+            webbrowser.open(url)
+        else:
+            wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def download_single_dataset(self, dataset, row):
+        """Download complete spectral data in JSON format when checkbox is clicked"""
+        title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
+        dataset_id = dataset.get('_id')
+        
+        if not dataset_id:
+            wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
+            return
+            
+        # Update UI to show downloading
+        self.data_grid.SetCellValue(row, 7, "Downloading...")  # Status column
+        
+        # Start download in thread
+        download_thread = threading.Thread(target=self.download_spectral_json_worker, 
+                                         args=(dataset_id, title, row))
+        download_thread.daemon = True
+        download_thread.start()
+        
+    def normalize_filename(self, title):
+        """Normalize dataset title for consistent filename generation"""
+        # Replace problematic characters consistently
+        clean_title = title.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        return clean_title
+    
+    def download_spectral_json_worker(self, dataset_id, title, row):
+        """Worker thread for downloading complete spectral data in JSON format"""
+        try:
+            base_url = self.url_text.GetValue().rstrip('/')
+            download_path = self.download_path.GetValue()
+            os.makedirs(download_path, exist_ok=True)
+            
+            # Use consistent filename normalization
+            clean_title = self.normalize_filename(title)
+            filename = f"spectra_{clean_title}.json"
+            filepath = os.path.join(download_path, filename)
+            
+            # Download all spectra in blocks of 10
+            all_spectra = []
+            block_size = 10
+            start = 0
+            total_downloaded = 0
+            
+            wx.CallAfter(self.SetStatusText, f"Downloading spectra for: {title}")
+            
+            while True:
+                # Get spectra block using EcoSIS API
+                spectra_url = f"{base_url}/api/spectra/search/{dataset_id}"
+                params = {
+                    'start': start,
+                    'stop': start + block_size,
+                    'filters': '[]'
+                }
+                
+                response = requests.get(spectra_url, params=params, timeout=60)
+                
+                if response.status_code == 200:
+                    spectra_data = response.json()
+                    items = spectra_data.get('items', [])
+                    
+                    if not items:
+                        break  # No more spectra to download
+                    
+                    all_spectra.extend(items)
+                    total_downloaded += len(items)
+                    start += block_size
+                    
+                    # Update progress
+                    wx.CallAfter(self.data_grid.SetCellValue, row, 7, f"Downloaded {total_downloaded}")
+                    wx.CallAfter(self.SetStatusText, f"Downloaded {total_downloaded} spectra for: {title}")
+                    
+                    # If we got fewer items than requested, we've reached the end
+                    if len(items) < block_size:
+                        break
+                        
+                else:
+                    wx.CallAfter(self.data_grid.SetCellValue, row, 7, f"Error: HTTP {response.status_code}")
+                    return
+            
+            if all_spectra:
+                # Create comprehensive JSON structure
+                complete_data = {
+                    'dataset_info': {
+                        'id': dataset_id,
+                        'title': title,
+                        'download_date': datetime.now().isoformat(),
+                        'total_spectra': len(all_spectra),
+                        'source': 'EcoSIS API'
+                    },
+                    'spectra': all_spectra
+                }
+                
+                # Save JSON file
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(complete_data, f, indent=2)
+                
+                print(f"DEBUG: Saved {len(all_spectra)} spectra to {filepath}")
+                
+                # Update local datasets tracking immediately after successful download
+                wx.CallAfter(self.check_local_data)  # Refresh the local datasets list
+                
+                # Update UI
+                wx.CallAfter(self.data_grid.SetCellValue, row, 0, "1")  # Check the checkbox
+                wx.CallAfter(self.data_grid.SetCellValue, row, 7, f"Complete ({total_downloaded})")
+                wx.CallAfter(self.highlight_local_row, row)
+                wx.CallAfter(self.SetStatusText, f"Downloaded {total_downloaded} spectra: {title}")
+                
+            else:
+                wx.CallAfter(self.data_grid.SetCellValue, row, 7, "No spectra found")
+                
+        except Exception as e:
+            error_msg = f"Error: {str(e)[:20]}"
+            wx.CallAfter(self.data_grid.SetCellValue, row, 7, error_msg)
+            wx.CallAfter(self.SetStatusText, f"Download failed: {title}")
+            
+    def is_dataset_local(self, dataset):
+        """Check if a dataset's spectral JSON is available locally"""
+        if not dataset:
+            return False
+            
+        download_path = self.download_path.GetValue()
+        title = dataset.get('ecosis', {}).get('package_title', '')
+        
+        if not title:
+            return False
+            
+        # Use consistent filename normalization
+        clean_title = self.normalize_filename(title)
+        filename = f"spectra_{clean_title}.json"
+        filepath = os.path.join(download_path, filename)
+        
+        # Check what files actually exist
+        try:
+            existing_files = [f for f in os.listdir(download_path) if f.startswith('spectra_') and f.endswith('.json')]
+            
+            # Check for exact match first
+            if filename in existing_files:
+                file_size = os.path.getsize(filepath)
+                return file_size > 100
+            
+            # Check for case variations or other close matches
+            for existing_file in existing_files:
+                if existing_file.lower() == filename.lower():
+                    alt_filepath = os.path.join(download_path, existing_file)
+                    file_size = os.path.getsize(alt_filepath)
+                    return file_size > 100
+                    
+        except OSError as e:
+            print(f"DEBUG: Error listing directory: {e}")
+        
+        return False
+        
+    def load_spectral_data_local(self, dataset):
+        """Load spectral data from local JSON file"""
+        try:
+            download_path = self.download_path.GetValue()
+            title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
+            
+            # Use consistent filename normalization
+            clean_title = self.normalize_filename(title)
+            filename = f"spectra_{clean_title}.json"
+            filepath = os.path.join(download_path, filename)
+            
+            # List existing files for debugging and find actual file
+            actual_filepath = None
+            try:
+                existing_files = [f for f in os.listdir(download_path) if f.startswith('spectra_') and f.endswith('.json')]
+                
+                # Try exact match first
+                if filename in existing_files:
+                    actual_filepath = filepath
+                else:
+                    # Try case-insensitive match
+                    for existing_file in existing_files:
+                        if existing_file.lower() == filename.lower():
+                            actual_filepath = os.path.join(download_path, existing_file)
+                            break
+                            
+            except OSError as e:
+                print(f"DEBUG: Error listing directory: {e}")
+            
+            if not actual_filepath or not os.path.exists(actual_filepath):
+                return False
+                
+            # Check file size first
+            file_size = os.path.getsize(actual_filepath)
+            
+            if file_size < 100:
+                return False
+                
+            # Read JSON file
+            with open(actual_filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Process local JSON data into spectral format
+            spectral_data = self.process_local_json_data(data, title)
+            
+            if spectral_data:
+                # Cache the local data
+                self.cached_spectral_data = spectral_data
+                
+                # Plot the cached data
+                self.plot_cached_spectral_data()
+                
+                total_spectra = data.get('dataset_info', {}).get('total_spectra', len(spectral_data))
+                status_msg = f"Loaded {len(spectral_data)} of {total_spectra} spectra from local file"
+                self.SetStatusText(status_msg)
+                return True
+            else:
+                wx.MessageBox("No spectral data found in local file", "No Data", wx.OK | wx.ICON_WARNING)
+                return False
+                
+        except json.JSONDecodeError as e:
+            wx.MessageBox(f"Invalid JSON file: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return False
+        except FileNotFoundError as e:
+            wx.MessageBox(f"File not found: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return False
+        except Exception as e:
+            wx.MessageBox(f"Error loading local data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return False
+            
+    def process_local_json_data(self, data, title):
+        """Process local JSON data into spectral format"""
+        spectral_data = []
+        
+        try:
+            spectra_items = data.get('spectra', [])
+            
+            if not spectra_items:
+                return []
+            
+            # Process up to 15 spectra for visualization
+            for i, spectrum in enumerate(spectra_items[:15]):
+                if not isinstance(spectrum, dict):
+                    continue
+                    
+                datapoints = spectrum.get('datapoints', {})
+                
+                if not datapoints:
+                    continue
+                
+                # Separate wavelengths from other metadata
+                spectrum_wavelengths = []
+                spectrum_reflectance = []
+                
+                for key, value in datapoints.items():
+                    try:
+                        # Check if key looks like a wavelength (numeric)
+                        wavelength = float(key)
+                        if 300 <= wavelength <= 2500:  # Typical spectral range
+                            spectrum_wavelengths.append(wavelength)
+                            
+                            # Handle various value formats
+                            if isinstance(value, (int, float)):
+                                refl_value = float(value)
+                            else:
+                                refl_value = float(str(value))
+                            spectrum_reflectance.append(refl_value)
+                            
+                    except (ValueError, TypeError):
+                        continue
+                
+                if spectrum_wavelengths and spectrum_reflectance:
+                    # Sort by wavelength
+                    sorted_data = sorted(zip(spectrum_wavelengths, spectrum_reflectance))
+                    if sorted_data:
+                        wavelengths, reflectance = zip(*sorted_data)
+                        
+                        # Create meaningful legend label
+                        label = self.create_spectrum_label(spectrum, i + 1)
+                        
+                        spectral_data.append({
+                            'wavelengths': wavelengths,
+                            'reflectance': reflectance,
+                            'label': label,
+                            'color_index': len(spectral_data)
+                        })
+                        
+        except Exception as e:
+            print(f"DEBUG: process_local_json_data - Exception: {e}")
+            return []
+            
+        return spectral_data
+          
+    def highlight_local_row(self, row):
+        """Highlight a row that has local data available with dark mode support"""
+        # Check for dark mode and use appropriate colors
+        if wx.SystemSettings.GetAppearance().IsDark():
+            # Dark mode: subtle dark blue highlight
+            highlight_color = wx.Colour(45, 55, 80)  # Dark blue-gray
+        else:
+            # Light mode: light blue highlight
+            highlight_color = wx.Colour(230, 240, 255)  # Light blue
+            
+        # Set background color for all columns in the row
+        for col in range(self.data_grid.GetNumberCols()):
+            self.data_grid.SetCellBackgroundColour(row, col, highlight_color)
+        
+        self.data_grid.Refresh()
+        
+    def collect_organizations(self):
+        """Collect unique organizations from current dataset"""
+        for dataset in self.api_data:
+            ecosis_info = dataset.get('ecosis', {})
+            organization = ecosis_info.get('organization', [])
+            
+            if isinstance(organization, list):
+                for org in organization:
+                    if org and str(org).strip():
+                        self.all_organizations.add(str(org).strip())
+            elif isinstance(organization, str) and organization.strip():
+                self.all_organizations.add(organization.strip())
+    
+    def collect_themes(self):
+        """Collect unique themes from current dataset"""
+        for dataset in self.api_data:
+            theme_list = dataset.get('Theme', [])
+            if isinstance(theme_list, list):
+                for theme in theme_list:
+                    if theme and str(theme).strip():
+                        self.all_themes.add(str(theme).strip())
+            elif isinstance(theme_list, str) and theme_list.strip():
+                self.all_themes.add(theme_list.strip())
+                
+            # Also collect from Category field
+            category_list = dataset.get('Category', [])
+            if isinstance(category_list, list):
+                for category in category_list:
+                    if category and str(category).strip():
+                        self.all_themes.add(str(category).strip())
+            elif isinstance(category_list, str) and category_list.strip():
+                self.all_themes.add(category_list.strip())
+                
+    def update_organization_combobox(self):
+        """Update organization combobox with collected organizations"""
+        # Clear existing items
+        self.org_choice.Clear()
+        
+        # Add "All" option
+        self.org_choice.Append("All")
+        
+        # Add sorted organizations
+        sorted_orgs = sorted(list(self.all_organizations))
+        for org in sorted_orgs:
+            self.org_choice.Append(org)
+        
+        # Set to "All" by default
+        self.org_choice.SetSelection(0)
+        
+    def update_theme_combobox(self):
+        """Update theme combobox with collected themes"""
+        # Get current selection
+        current_selection = self.type_choice.GetStringSelection()
+        
+        # Clear existing items
+        self.type_choice.Clear()
+        
+        # Add "All" option
+        self.type_choice.Append("All")
+        
+        # Add sorted themes
+        sorted_themes = sorted(list(self.all_themes))
+        for theme in sorted_themes:
+            self.type_choice.Append(theme)
+        
+        # Try to restore previous selection, otherwise set to "All"
+        if current_selection and current_selection in sorted_themes:
+            self.type_choice.SetStringSelection(current_selection)
+        else:
+            self.type_choice.SetSelection(0)  # "All"
+        
+    def update_metadata_display(self):
+        """Update metadata display for selected EcoSIS dataset"""
+        if not self.current_selection:
+            return
+            
+        # Format metadata for EcoSIS dataset
+        metadata_text = "EcoSIS Dataset Metadata:\n\n"
+        
+        # Dataset ID and basic info
+        metadata_text += f"Dataset ID: {self.current_selection.get('_id', 'Unknown')}\n\n"
+        
+        # EcoSIS-specific information
+        ecosis_info = self.current_selection.get('ecosis', {})
+        if ecosis_info:
+            metadata_text += "Dataset Information:\n"
+            for key, value in ecosis_info.items():
+                if isinstance(value, list):
+                    value_str = ', '.join(str(v) for v in value)
+                else:
+                    value_str = str(value)
+                metadata_text += f"  {key.title().replace('_', ' ')}: {value_str}\n"
+            metadata_text += "\n"
+        
+        # Dataset attributes (spectral metadata)
+        metadata_text += "Spectral Attributes:\n"
+        for key, value in self.current_selection.items():
+            if key not in ['_id', 'ecosis'] and value:
+                if isinstance(value, list):
+                    if len(value) <= 5:
+                        value_str = ', '.join(str(v) for v in value)
+                    else:
+                        value_str = f"{', '.join(str(v) for v in value[:5])}... ({len(value)} total)"
+                else:
+                    value_str = str(value)
+                metadata_text += f"  {key.title().replace('_', ' ')}: {value_str}\n"
+                
+        self.metadata_text.SetValue(metadata_text)
+        
+    def on_search_text(self, event):
+        """Handle search text changes with timer and destruction check"""
+        if self._destroyed:
+            return
+            
+        # Stop previous timer if running
+        if hasattr(self, 'search_timer') and self.search_timer and self.search_timer.IsRunning():
+            self.search_timer.Stop()
+        
+        # Start timer for 300ms delay
+        if hasattr(self, 'search_timer') and self.search_timer:
+            self.search_timer.Start(300, wx.TIMER_ONE_SHOT)
+    
+    def on_search_timer(self, event):
+        """Called when search timer expires with destruction check"""
+        if self._destroyed:
+            return
+        try:
+            self.apply_local_filters()
+        except Exception as e:
+            print(f"DEBUG: Search timer error: {e}")
+
+    def on_filter_change(self, event):
+        """Handle filter changes"""
+        # Use local filtering for instant results
+        self.apply_local_filters()
+        
+    def apply_local_filters(self):
+        """Apply current search and filter settings locally for instant results"""
+        search_term = self.search_text.GetValue().lower()
+        theme_filter = self.type_choice.GetStringSelection()
+        org_filter = self.org_choice.GetValue().strip().lower()
+        
+        self.filtered_data = []
+        
+        for dataset in self.api_data:
+            # Apply search filter - search in title, keywords, and other text fields
+            if search_term:
+                ecosis_info = dataset.get('ecosis', {})
+                title = ecosis_info.get('package_title', '').lower()
+                keywords = dataset.get('Keywords', [])
+                if isinstance(keywords, list):
+                    keywords_str = ' '.join(str(kw) for kw in keywords).lower()
+                else:
+                    keywords_str = str(keywords).lower()
+                
+                # Search in title, keywords, and organization
+                organization = ecosis_info.get('organization', [])
+                if isinstance(organization, list):
+                    org_str = ' '.join(str(org) for org in organization).lower()
+                else:
+                    org_str = str(organization).lower()
+                
+                # Check if search term is found in any of these fields
+                if (search_term not in title and 
+                    search_term not in keywords_str and 
+                    search_term not in org_str):
+                    continue
+            
+            # Apply theme filter - simplified exact matching
+            if theme_filter and theme_filter != "All":
+                theme_list = dataset.get('Theme', [])
+                category_list = dataset.get('Category', [])
+                theme_match = False
+                
+                # Check if the selected theme appears in the Theme list
+                if isinstance(theme_list, list):
+                    theme_match = theme_filter in theme_list
+                elif isinstance(theme_list, str):
+                    theme_match = theme_filter == theme_list
+                
+                # Also check Category list if Theme didn't match
+                if not theme_match and isinstance(category_list, list):
+                    theme_match = theme_filter in category_list
+                elif not theme_match and isinstance(category_list, str):
+                    theme_match = theme_filter == category_list
+                
+                if not theme_match:
+                    continue
+            
+            # Apply organization filter
+            if org_filter and org_filter != "all":
+                ecosis_info = dataset.get('ecosis', {})
+                organization = ecosis_info.get('organization', [])
+                if isinstance(organization, list):
+                    org_match = any(org_filter in str(org).lower() for org in organization)
+                elif isinstance(organization, str):
+                    org_match = org_filter in organization.lower()
+                else:
+                    org_match = False
+                    
+                if not org_match:
+                    continue
+            
+            self.filtered_data.append(dataset)
+        
+        # Update the grid with filtered results
+        wx.CallAfter(self.update_data_grid)
+        wx.CallAfter(self.SetStatusText, f"Showing {len(self.filtered_data)} of {len(self.api_data)} datasets")
+        
+    def on_load_spectral(self, event):
+        """Load and display spectral data for selected dataset"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+        
+        self.load_spectral_data()
+        
+    def load_spectral_data(self):
+        """Load spectral data from local file if available, otherwise from EcoSIS API"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+        
+        # Check if data is available locally first
+        is_local = self.is_dataset_local(self.current_selection)
+        
+        if is_local:
+            success = self.load_spectral_data_local(self.current_selection)
+            if success:
+                return  # Successfully loaded from local file
+            
+        # Fallback to API if local loading failed or not available
+        self.load_spectral_data_api()
+        
+    def load_spectral_data_api(self):
+        """Load spectral data from EcoSIS API"""
+        try:
+            base_url = self.url_text.GetValue().rstrip('/')
+            dataset_id = self.current_selection.get('_id')
+            
+            if not dataset_id:
+                wx.MessageBox("Dataset ID not found", "Error", wx.OK | wx.ICON_ERROR)
+                return
+            
+            # Get spectra data using EcoSIS API
+            spectra_url = f"{base_url}/api/spectra/search/{dataset_id}"
+            params = {
+                'start': 0,
+                'stop': 10,  # Limit to first 10 spectra for performance
+                'filters': '[]'
+            }
+            
+            response = requests.get(spectra_url, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                spectra_data = response.json()
+                items = spectra_data.get('items', [])
+                
+                if not items:
+                    wx.MessageBox("No spectral data found for this dataset", "No Data", wx.OK | wx.ICON_WARNING)
+                    return
+                
+                # Process and cache spectral data
+                self.cached_spectral_data = self.process_spectral_data(items)
+                
+                # Plot the cached data
+                self.plot_cached_spectral_data()
+                
+                self.SetStatusText(f"Loaded {len(self.cached_spectral_data)} spectra from API")
+                
+            else:
+                wx.MessageBox(f"API Error: HTTP {response.status_code}", "Error", wx.OK | wx.ICON_ERROR)
+                
+        except requests.RequestException as e:
+            wx.MessageBox(f"Network error: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+        except Exception as e:
+            wx.MessageBox(f"Error loading spectral data: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def process_spectral_data(self, items):
+        """Process raw spectral data and cache it for efficient reuse"""
+        processed_spectra = []
+        
+        for i, spectrum in enumerate(items[:5]):  # Limit to 5 spectra for clarity
+            datapoints = spectrum.get('datapoints', {})
+            
+            # Separate wavelengths from other metadata
+            spectrum_wavelengths = []
+            spectrum_reflectance = []
+            
+            for key, value in datapoints.items():
+                try:
+                    # Check if key looks like a wavelength (numeric)
+                    wavelength = float(key)
+                    if 300 <= wavelength <= 2500:  # Typical spectral range
+                        spectrum_wavelengths.append(wavelength)
+                        spectrum_reflectance.append(float(str(value)))  # Convert to float safely
+                except (ValueError, TypeError):
+                    continue  # Skip non-numeric keys (metadata)
+            
+            if spectrum_wavelengths and spectrum_reflectance:
+                # Sort by wavelength
+                sorted_data = sorted(zip(spectrum_wavelengths, spectrum_reflectance))
+                if sorted_data:
+                    wavelengths, reflectance = zip(*sorted_data)
+                    
+                    # Create meaningful legend label
+                    label = self.create_spectrum_label(spectrum, i + 1)
+                    
+                    # Store processed data
+                    processed_spectra.append({
+                        'wavelengths': wavelengths,
+                        'reflectance': reflectance,
+                        'label': label,
+                        'color_index': len(processed_spectra)
+                    })
+        
+        return processed_spectra
+    
+    def plot_cached_spectral_data(self):
+        """Plot spectral data from cache - efficient for redraws"""
+        if not self.cached_spectral_data:
+            return
+        
+        # Clear previous plots
+        self.spectral_axes.clear()
+        self.configure_spectral_plot()
+        
+        # Color palette for multiple spectra
+        colors = plt.cm.tab10(np.linspace(0, 1, len(self.cached_spectral_data)))
+        
+        # Track min/max values for dynamic axis scaling
+        all_reflectance_values = []
+        
+        # Plot each cached spectrum
+        for spectrum_data in self.cached_spectral_data:
+            self.spectral_axes.plot(spectrum_data['wavelengths'], 
+                                  spectrum_data['reflectance'],
+                                  color=colors[spectrum_data['color_index']], 
+                                  label=spectrum_data['label'], 
+                                  alpha=0.8, 
+                                  linewidth=1.5)
+            
+            # Collect all reflectance values for axis scaling
+            all_reflectance_values.extend(spectrum_data['reflectance'])
+        
+        # Update plot with dataset title
+        dataset_title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
+        self.spectral_axes.set_title(f"Spectral Data: {dataset_title}")
+        
+        # Set reasonable axis limits
+        self.spectral_axes.set_xlim(300, 2500)
+        
+        # Dynamic Y-axis scaling based on actual data
+        if all_reflectance_values:
+            y_min = min(all_reflectance_values)
+            y_max = max(all_reflectance_values)
+            y_range = y_max - y_min
+            
+            # Add 5% padding above and below
+            padding = y_range * 0.05
+            self.spectral_axes.set_ylim(y_min - padding, y_max + padding)
+            
+            # Update y-axis label to show the units (percentage)
+            self.spectral_axes.set_ylabel("Reflectance (%)")
+        else:
+            # Fallback to 0-1 if no data
+            self.spectral_axes.set_ylim(0, 1)
+            self.spectral_axes.set_ylabel("Reflectance")
+        
+        # Configure legend
+        if self.cached_spectral_data:
+            legend = self.spectral_axes.legend(loc='upper right', 
+                                             framealpha=0.9, 
+                                             fancybox=True, 
+                                             shadow=True)
+            # Adjust legend text color for dark mode
+            if wx.SystemSettings.GetAppearance().IsDark():
+                for text in legend.get_texts():
+                    text.set_color('white')
+        
+        # Apply tight layout and draw
+        self.spectral_figure.tight_layout()
+        self.spectral_canvas.draw()
+    
+    def create_spectrum_label(self, spectrum, spectrum_num):
+        """Create a meaningful label for spectrum legend"""
+        # Priority order for creating informative labels
+        label_parts = []
+        
+        # 1. Try scientific name
+        scientific_name = spectrum.get('Scientific Name')
+        if scientific_name:
+            if isinstance(scientific_name, list) and scientific_name:
+                label_parts.append(str(scientific_name[0]))
+            elif isinstance(scientific_name, str):
+                label_parts.append(scientific_name)
+        
+        # 2. Try common name if no scientific name
+        if not label_parts:
+            common_name = spectrum.get('Common Name')
+            if common_name:
+                if isinstance(common_name, list) and common_name:
+                    label_parts.append(str(common_name[0]))
+                elif isinstance(common_name, str):
+                    label_parts.append(common_name)
+        
+        # 3. Try sample ID or specimen ID
+        if not label_parts:
+            for field in ['Sample ID', 'Specimen ID', 'ID', 'Sample_ID', 'Unique_ID']:
+                sample_id = spectrum.get(field)
+                if sample_id:
+                    if isinstance(sample_id, list) and sample_id:
+                        label_parts.append(f"ID: {sample_id[0]}")
+                    elif isinstance(sample_id, str):
+                        label_parts.append(f"ID: {sample_id}")
+                    break
+        
+        # Fallback to generic spectrum number
+        if not label_parts:
+            return f"Spectrum {spectrum_num}"
+        
+        # Combine parts (limit to 2 parts for readability)
+        label = " - ".join(label_parts[:2])
+        
+        # Add spectrum number if we have other info
+        if label_parts:
+            return f"S{spectrum_num}: {label}"
+        else:
+            return f"Spectrum {spectrum_num}"
+            
+    def on_calculate_indices(self, event):
+        """Calculate vegetation indices for current spectral data"""
+        if not self.current_selection:
+            wx.MessageBox("Please load spectral data first", "No Data", wx.OK | wx.ICON_WARNING)
+            return
+            
+        try:
+            # Get spectral statistics to calculate indices
+            base_url = self.url_text.GetValue().rstrip('/')
+            dataset_id = self.current_selection.get('_id')
+            
+            stats_url = f"{base_url}/api/spectra/stats/{dataset_id}"
+            response = requests.get(stats_url, timeout=30)
+            
+            if response.status_code == 200:
+                stats_data = response.json()
+                
+                # Calculate common vegetation indices
+                indices_results = {}
+                
+                # Try to calculate NDVI (NIR - Red) / (NIR + Red)
+                # Look for wavelengths around 670nm (Red) and 800nm (NIR)
+                red_bands = [key for key in stats_data.keys() if self.is_near_wavelength(key, 670, 20)]
+                nir_bands = [key for key in stats_data.keys() if self.is_near_wavelength(key, 800, 50)]
+                
+                if red_bands and nir_bands:
+                    red_key = min(red_bands, key=lambda x: abs(float(x) - 670))
+                    nir_key = min(nir_bands, key=lambda x: abs(float(x) - 800))
+                    
+                    red_avg = float(stats_data[red_key]['avg'])
+                    nir_avg = float(stats_data[nir_key]['avg'])
+                    
+                    ndvi = (nir_avg - red_avg) / (nir_avg + red_avg) if (nir_avg + red_avg) != 0 else 0
+                    indices_results['NDVI'] = f"{ndvi:.4f} (Red: {red_key}nm, NIR: {nir_key}nm)"
+                
+                # Calculate other indices if possible
+                green_bands = [key for key in stats_data.keys() if self.is_near_wavelength(key, 550, 30)]
+                if green_bands and red_bands and nir_bands:
+                    green_key = min(green_bands, key=lambda x: abs(float(x) - 550))
+                    green_avg = float(stats_data[green_key]['avg'])
+                    
+                    # Simple Ratio (SR)
+                    sr = nir_avg / red_avg if red_avg != 0 else 0
+                    indices_results['Simple Ratio (SR)'] = f"{sr:.4f}"
+                    
+                    # Green NDVI
+                    gndvi = (nir_avg - green_avg) / (nir_avg + green_avg) if (nir_avg + green_avg) != 0 else 0
+                    indices_results['GNDVI'] = f"{gndvi:.4f} (Green: {green_key}nm)"
+                
+                # Display results
+                if indices_results:
+                    results_text = "Calculated Vegetation Indices:\n\n"
+                    for index_name, value in indices_results.items():
+                        results_text += f"{index_name}: {value}\n"
+                    
+                    results_text += f"\nDataset: {self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')}"
+                    results_text += f"\nTotal Spectra: {stats_data.get(list(stats_data.keys())[0], {}).get('count', 0)}"
+                    
+                    wx.MessageBox(results_text, "Vegetation Indices", wx.OK | wx.ICON_INFORMATION)
+                else:
+                    wx.MessageBox("Could not calculate indices - required wavelengths not found", "Info", wx.OK | wx.ICON_INFORMATION)
+                    
+            else:
+                wx.MessageBox(f"Could not retrieve spectral statistics: HTTP {response.status_code}", "Error", wx.OK | wx.ICON_ERROR)
+                
+        except Exception as e:
+            wx.MessageBox(f"Error calculating indices: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+    
+    def is_near_wavelength(self, key_str, target_wavelength, tolerance):
+        """Check if a wavelength key is near the target wavelength within tolerance"""
+        try:
+            wavelength = float(key_str)
+            return abs(wavelength - target_wavelength) <= tolerance
+        except ValueError:
+            return False
+        
+    def on_add_download(self, event):
+        """Add selected dataset to download queue"""
+        if not self.current_selection:
+            wx.MessageBox("Please select a dataset first", "No Selection", wx.OK | wx.ICON_WARNING)
+            return
+            
+        # Add to download list
+        index = self.download_list.GetItemCount()
+        dataset_title = self.current_selection.get('ecosis', {}).get('package_title', 'Unknown')
+        self.download_list.InsertItem(index, dataset_title)
+        self.download_list.SetItem(index, 1, "Queued")
+        self.download_list.SetItem(index, 2, "0%")
+        self.download_list.SetItem(index, 3, "Unknown")
+        
+    def on_start_downloads(self, event):
+        """Start downloading queued datasets"""
+        if self.download_list.GetItemCount() == 0:
+            wx.MessageBox("No datasets in download queue", "Empty Queue", wx.OK | wx.ICON_WARNING)
+            return
+            
+        # Start download thread
+        download_thread = threading.Thread(target=self.download_datasets)
+        download_thread.daemon = True
+        download_thread.start()
+        
+    def download_datasets(self):
+        """Download all datasets in queue using EcoSIS export API"""
+        download_path = self.download_path.GetValue()
+        os.makedirs(download_path, exist_ok=True)
+        
+        base_url = self.url_text.GetValue().rstrip('/')
+        total_items = self.download_list.GetItemCount()
+        
+        for i in range(total_items):
+            dataset_name = self.download_list.GetItemText(i)
+            wx.CallAfter(self.download_list.SetItem, i, 1, "Downloading")
+            
+            try:
+                # Find the dataset by name in our current data
+                dataset_id = None
+                for dataset in self.api_data:
+                    if dataset.get('ecosis', {}).get('package_title', '') == dataset_name:
+                        dataset_id = dataset.get('_id')
+                        break
+                
+                if not dataset_id:
+                    wx.CallAfter(self.download_list.SetItem, i, 1, "Error: ID not found")
+                    continue
+                
+                # Use EcoSIS export API
+                export_url = f"{base_url}/api/package/{dataset_id}/export"
+                params = {
+                    'metadata': 'true',  # Include metadata
+                    'filters': '[]'  # No additional filters
+                }
+                
+                wx.CallAfter(self.download_list.SetItem, i, 2, "10%")
+                
+                response = requests.get(export_url, params=params, timeout=120)
+                
+                wx.CallAfter(self.download_list.SetItem, i, 2, "50%")
+                
+                if response.status_code == 200:
+                    # Save CSV file
+                    filename = f"{dataset_name.replace(' ', '_').replace('/', '_')}.csv"
+                    filepath = os.path.join(download_path, filename)
+                    
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    
+                    wx.CallAfter(self.download_list.SetItem, i, 2, "100%")
+                    wx.CallAfter(self.download_list.SetItem, i, 1, "Complete")
+                    
+                    # Also download dataset metadata as JSON
+                    metadata_filename = f"{dataset_name.replace(' ', '_').replace('/', '_')}_metadata.json"
+                    metadata_filepath = os.path.join(download_path, metadata_filename)
+                    
+                    # Find the dataset in our data
+                    dataset_metadata = None
+                    for dataset in self.api_data:
+                        if dataset.get('ecosis', {}).get('package_title', '') == dataset_name:
+                            dataset_metadata = dataset
+                            break
+                    
+                    if dataset_metadata:
+                        with open(metadata_filepath, 'w', encoding='utf-8') as f:
+                            json.dump(dataset_metadata, f, indent=2)
+                    
+                else:
+                    wx.CallAfter(self.download_list.SetItem, i, 1, f"HTTP Error: {response.status_code}")
+                
+            except requests.RequestException as e:
+                wx.CallAfter(self.download_list.SetItem, i, 1, f"Network Error")
+            except Exception as e:
+                wx.CallAfter(self.download_list.SetItem, i, 1, f"Error: {str(e)[:20]}")
+                
+            # Update overall progress
+            progress = ((i + 1) * 100) // total_items
+            wx.CallAfter(self.download_progress_bar.SetValue, progress)
+                
+        wx.CallAfter(self.download_progress_bar.SetValue, 100)
+        wx.CallAfter(self.SetStatusText, "Downloads complete")
+        
+    def on_pause_downloads(self, event):
+        """Pause current downloads"""
+        # Implementation for pausing downloads
+        pass
+        
+    def on_clear_queue(self, event):
+        """Clear download queue"""
+        self.download_list.DeleteAllItems()
+        self.download_progress_bar.SetValue(0)
+        
+    def on_browse_path(self, event):
+        """Browse for download directory"""
+        dlg = wx.DirDialog(self, "Choose download directory")
+        if dlg.ShowModal() == wx.ID_OK:
+            self.download_path.SetValue(dlg.GetPath())
+        dlg.Destroy()
+
+    def write_merge_file_header(self, output_file, total_files):
+        """Write the header structure for a new merge file"""
+        output_file.write('{\n')
+        output_file.write('  "merge_info": {\n')
+        output_file.write(f'    "created_date": "{datetime.now().isoformat()}",\n')
+        output_file.write(f'    "source_files": {total_files},\n')
+        output_file.write('    "total_datasets": 0,\n')
+        output_file.write('    "total_spectra": 0,\n')
+        output_file.write('    "memory_optimization": "Memory-safe with auto-pause/resume",\n')
+        output_file.write('    "source": "EcoSIS API Curator - Memory-Safe Merger"\n')
+        output_file.write('  },\n')
+        output_file.write('  "datasets": [\n')
+
+    def process_single_file_streaming_safe(self, filepath, output_file, is_first_dataset, memory_monitor):
+        """Memory-safe version with progressive memory management"""
+        import gc
+        
+        data = None
+        dataset_info = None
+        spectra = None
+        
+        try:
+            # Check memory before loading file
+            initial_memory = memory_monitor.get_current_memory_mb()
+            if memory_monitor.should_pause_processing():
+                print(f"DEBUG: Skipping {filepath} - memory threshold reached before processing")
+                return 0
+            
+            # Read JSON file with explicit memory management
+            with open(filepath, 'r', encoding='utf-8') as input_file:
+                data = json.load(input_file)
+            
+            dataset_info = data.get('dataset_info', {})
+            spectra = data.get('spectra', [])
+            
+            if not spectra:
+                print(f"DEBUG: No spectra found in {filepath}")
+                return 0
+            
+            # Check memory after loading
+            post_load_memory = memory_monitor.get_current_memory_mb()
+            memory_increase = post_load_memory - initial_memory
+            
+            print(f"DEBUG: Processing {len(spectra)} spectra from {os.path.basename(filepath)} "
+                  f"(memory increase: {memory_increase:.1f}MB)")
+            
+            # Add comma if not the first dataset
+            if not is_first_dataset:
+                output_file.write(',\n')
+            
+            # Write dataset entry header
+            output_file.write('    {\n')
+            output_file.write(f'      "source_file": "{os.path.basename(filepath)}",\n')
+            output_file.write('      "dataset_info": ')
+            
+            # Stream dataset_info directly to minimize memory usage
+            json.dump(dataset_info, output_file, indent=6)
+            output_file.write(',\n')
+            
+            # Determine processing strategy based on dataset size and memory
+            spectra_count = len(spectra)
+            
+            if spectra_count > 5000 and memory_increase > 200:  # Large dataset, high memory use
+                # Ultra-conservative: process in very small chunks
+                chunk_size = 25
+                max_spectra = min(spectra_count, 2000)  # Limit to 2000 spectra max
+                print(f"DEBUG: Large dataset detected, processing first {max_spectra} spectra in chunks of {chunk_size}")
+            elif spectra_count > 1000:
+                # Moderate: normal chunking
+                chunk_size = 100
+                max_spectra = spectra_count
+            else:
+                # Small dataset: process all at once
+                chunk_size = spectra_count
+                max_spectra = spectra_count
+            
+            output_file.write(f'      "spectra_count": {min(max_spectra, spectra_count)},\n')
+            output_file.write('      "spectra": [\n')
+            
+            spectra_written = 0
+            
+            # Process spectra in determined chunks
+            for chunk_start in range(0, min(max_spectra, spectra_count), chunk_size):
+                # Progressive memory check - more lenient early on, stricter later
+                if spectra_written > 500 and memory_monitor.should_pause_processing():
+                    print(f"DEBUG: Memory threshold reached after processing {spectra_written} spectra")
+                    break
+                
+                chunk_end = min(chunk_start + chunk_size, min(max_spectra, spectra_count))
+                
+                # Process chunk
+                for i in range(chunk_start, chunk_end):
+                    spectrum = spectra[i]
+                    
+                    if spectra_written > 0:
+                        output_file.write(',\n')
+                    output_file.write('        ')
+                    json.dump(spectrum, output_file, separators=(',', ':'))
+                    spectra_written += 1
+                    
+                    # Periodic cleanup for very large datasets
+                    if spectra_written % 200 == 0:
+                        spectrum = None
+                        gc.collect()
+                        output_file.flush()
+                
+                # Force GC after each chunk
+                gc.collect()
+                
+                # Progress feedback for large datasets
+                if spectra_written % 500 == 0 and spectra_written > 0:
+                    current_memory = memory_monitor.get_current_memory_mb()
+                    print(f"DEBUG: Processed {spectra_written}/{min(max_spectra, spectra_count)} spectra, "
+                          f"memory: {current_memory:.1f}MB")
+            
+            output_file.write('\n      ]\n')
+            output_file.write('    }')
+            
+            # Final memory check
+            final_memory = memory_monitor.get_current_memory_mb()
+            total_increase = final_memory - initial_memory
+            
+            print(f"DEBUG: Completed {os.path.basename(filepath)}: {spectra_written} spectra written, "
+                  f"total memory increase: {total_increase:.1f}MB")
+            
+            # Clear all references and return count
+            spectra = None
+            dataset_info = None
+            data = None
+            gc.collect()
+            
+            return spectra_written
+            
+        except MemoryError:
+            print(f"DEBUG: Memory error processing {filepath}")
+            # Clean up and return what we managed to process
+            spectra = None
+            dataset_info = None
+            data = None
+            gc.collect()
+            return 0  # Since we can't track partial progress in this error case
+            
+        except Exception as e:
+            print(f"DEBUG: Error processing {filepath}: {str(e)}")
+            spectra = None
+            dataset_info = None
+            data = None
+            gc.collect()
+            return 0
+        
+        finally:
+            # Ensure cleanup
+            if 'data' in locals() and data is not None:
+                data = None
+            if 'dataset_info' in locals() and dataset_info is not None:
+                dataset_info = None
+            if 'spectra' in locals() and spectra is not None:
+                spectra = None
+            gc.collect()
+
+    def batch_processing_worker(self, spectra_files, output_dir, files_per_batch):
+        """Background worker with better progress reporting and cleanup safety"""
+        import gc
+        import time
+        
+        try:
+            total_batches = (len(spectra_files) + files_per_batch - 1) // files_per_batch
+            
+            # Initialize progress tracking
+            self.batch_progress = {
+                'current_batch': 0,
+                'total_batches': total_batches,
+                'current_file': 0,
+                'current_batch_files': 0,
+                'successful_batches': 0,
+                'total_datasets': 0,
+                'total_spectra': 0,
+                'current_status': 'Starting batch processing...',
+                'completed': False,
+                'error': None
+            }
+            
+            for batch_num in range(total_batches):
+                # Check for destruction before each batch
+                if self._destroyed:
+                    self.batch_progress['error'] = "Application closing"
+                    return
+                
+                # Check for cancellation
+                if hasattr(self, 'progress_dialog') and self.progress_dialog and self.progress_dialog.cancelled:
+                    self.batch_progress['error'] = "Cancelled by user"
+                    return
+                
+                start_idx = batch_num * files_per_batch
+                end_idx = min((batch_num + 1) * files_per_batch, len(spectra_files))
+                batch_files = spectra_files[start_idx:end_idx]
+                
+                # Update progress
+                self.batch_progress['current_batch'] = batch_num + 1
+                self.batch_progress['current_batch_files'] = len(batch_files)
+                self.batch_progress['current_file'] = 0
+                self.batch_progress['current_status'] = f'Starting batch {batch_num + 1}/{total_batches}...'
+                
+                # Process single batch
+                batch_output = os.path.join(output_dir, f"merged_spectra_batch_{batch_num + 1:03d}.json")
+                batch_datasets, batch_spectra = self.process_single_batch_threaded(batch_files, batch_output)
+                
+                if batch_datasets > 0:
+                    self.batch_progress['successful_batches'] += 1
+                    self.batch_progress['total_datasets'] += batch_datasets
+                    self.batch_progress['total_spectra'] += batch_spectra
+                    
+                    print(f"DEBUG: Batch {batch_num + 1} complete: {batch_datasets} datasets, {batch_spectra} spectra")
+                
+                # Update status
+                self.batch_progress['current_status'] = f'Completed batch {batch_num + 1}/{total_batches}'
+                
+                # Cleanup and brief pause
+                gc.collect()
+                time.sleep(0.1)
+            
+            # Mark as completed
+            self.batch_progress['completed'] = True
+            self.batch_progress['current_status'] = 'All batches completed successfully!'
+            
+            # Re-enable controls after brief delay
+            if not self._destroyed:
+                wx.CallAfter(self.cleanup_after_batch_completion)
+            
+        except Exception as e:
+            self.batch_progress['error'] = str(e)
+            self.batch_progress['current_status'] = f'Error: {str(e)}'
+            print(f"DEBUG: Batch processing thread error: {str(e)}")
+            
+            # Re-enable controls on error
+            if not self._destroyed:
+                wx.CallAfter(self.cleanup_after_batch_completion)
+
+    def cleanup_after_batch_completion(self):
+        """Cleanup after batch processing completes or fails with destruction check"""
+        if self._destroyed:
+            return
+            
+        try:
+            # Re-enable merge controls
+            self.set_merge_controls_enabled(True)
+            # Close progress dialog after a delay if still open
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                wx.CallLater(3000, self.close_progress_dialog)
+        except Exception as e:
+            print(f"DEBUG: Cleanup error: {e}")
+            
+    def close_progress_dialog(self):
+        """Close progress dialog if it exists with destruction check"""
+        if self._destroyed:
+            return
+            
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            try:
+                self.progress_dialog.Close()
+                self.progress_dialog = None
+            except:
+                pass
+
+    def start_batch_processing_thread(self, spectra_files, output_dir, files_per_batch):
+        """Start batch processing with responsive progress dialog"""
+        # Store output directory for later use
+        self.last_batch_output_dir = output_dir
+        
+        # Calculate total batches
+        total_batches = (len(spectra_files) + files_per_batch - 1) // files_per_batch
+        
+        # Create and show progress dialog
+        self.progress_dialog = BatchProgressDialog(self, total_batches)
+        self.progress_dialog.Show()
+        
+        # Disable merge controls
+        self.set_merge_controls_enabled(False)
+        
+        # Show initial status
+        self.SetStatusText("Starting batch processing...")
+        
+        # Create and start background thread
+        self.batch_thread = threading.Thread(
+            target=self.batch_processing_worker,
+            args=(spectra_files, output_dir, files_per_batch),
+            daemon=True
+        )
+        self.batch_thread.start()
+    
+    def set_merge_controls_enabled(self, enabled):
+        """Enable/disable merge-related controls"""
+        # This prevents users from starting multiple operations
+        # You can add other controls here as needed
+        pass
+
+    def process_single_batch_threaded(self, batch_files, output_filepath):
+        """Process a single batch of files - designed for background thread"""
+        import gc
+        
+        memory_monitor = MemoryMonitor(memory_threshold_percent=40, critical_threshold_percent=60)
+        datasets_processed = 0
+        total_spectra = 0
+        
+        try:
+            with open(output_filepath, 'w', encoding='utf-8', buffering=8192) as output_file:
+                # Write batch header
+                output_file.write('{\n')
+                output_file.write('  "batch_info": {\n')
+                output_file.write(f'    "created_date": "{datetime.now().isoformat()}",\n')
+                output_file.write(f'    "source_files": {len(batch_files)},\n')
+                output_file.write('    "batch_processing": true,\n')
+                output_file.write('    "source": "EcoSIS API Curator - Background Batch Processing"\n')
+                output_file.write('  },\n')
+                output_file.write('  "datasets": [\n')
+                
+                first_dataset = True
+                
+                for i, filepath in enumerate(batch_files):
+                    # Update file progress
+                    if hasattr(self, 'batch_progress'):
+                        self.batch_progress['current_file'] = i + 1
+                        self.batch_progress['current_status'] = f'Processing {os.path.basename(filepath)} ({i+1}/{len(batch_files)})'
+                    
+                    # Check memory before each file (more conservative in thread)
+                    if memory_monitor.should_pause_processing():
+                        print(f"DEBUG: Memory pressure in batch thread - processed {i}/{len(batch_files)} files")
+                        break
+                    
+                    try:
+                        dataset_spectra_count = self.process_single_file_streaming_safe(
+                            filepath, output_file, first_dataset, memory_monitor)
+                        
+                        if dataset_spectra_count > 0:
+                            datasets_processed += 1
+                            total_spectra += dataset_spectra_count
+                            first_dataset = False
+                            
+                    except Exception as e:
+                        print(f"DEBUG: Error in batch processing {filepath}: {str(e)}")
+                        continue
+                    
+                    # More aggressive cleanup in background thread
+                    gc.collect()
+                    time.sleep(0.01)  # Tiny pause to be system-friendly
+                
+                # Close batch file
+                output_file.write('\n  ]\n}\n')
+            
+            return datasets_processed, total_spectra
+            
+        except Exception as e:
+            print(f"DEBUG: Error processing batch: {str(e)}")
+            return 0, 0
+
+    def on_merge_local_spectra(self, event):
+        """Merge all local spectra JSON files with batch processing for memory safety"""
+        import gc
+        
+        download_path = self.download_path.GetValue()
+        
+        # Check if download directory exists
+        if not os.path.exists(download_path):
+            wx.MessageBox("Download directory does not exist", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        # Find all local spectra JSON files
+        spectra_files = []
+        try:
+            for filename in os.listdir(download_path):
+                if filename.startswith('spectra_') and filename.endswith('.json'):
+                    filepath = os.path.join(download_path, filename)
+                    if os.path.getsize(filepath) > 100:
+                        spectra_files.append(filepath)
+        except OSError as e:
+            wx.MessageBox(f"Error scanning download directory: {str(e)}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        if not spectra_files:
+            wx.MessageBox("No local spectra JSON files found to merge", "No Files", wx.OK | wx.ICON_WARNING)
+            return
+        
+        # Calculate batch size based on available memory
+        total_size_mb = sum(os.path.getsize(f) / (1024 * 1024) for f in spectra_files)
+        available_gb = psutil.virtual_memory().available / (1024 * 1024 * 1024)
+        
+        # Conservative batch sizing: use only 20% of available memory per batch
+        safe_memory_gb = available_gb * 0.2
+        safe_memory_mb = safe_memory_gb * 1024
+        
+        # Estimate files per batch (assuming 2.5x memory expansion factor)
+        estimated_mb_per_file = total_size_mb / len(spectra_files)
+        files_per_batch = max(1, int(safe_memory_mb / (estimated_mb_per_file * 2.5)))
+        
+        # Show batch processing dialog
+        batch_info = (f"Large dataset detected ({total_size_mb:.1f}MB total)\n"
+                     f"Available memory: {available_gb:.1f}GB\n"
+                     f"Files to process: {len(spectra_files)}\n\n"
+                     f"Will create {(len(spectra_files) + files_per_batch - 1) // files_per_batch} batch files\n"
+                     f"with ~{files_per_batch} files per batch.\n\n"
+                     f"This will run in the background to keep the interface responsive.\n\n"
+                     f"Continue with batch processing?")
+        
+        if wx.MessageBox(batch_info, "Batch Processing Required", wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
+            return
+        
+        # Ask for output directory instead of single file
+        dlg = wx.DirDialog(self, "Choose directory for batch output files")
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        
+        output_dir = dlg.GetPath()
+        dlg.Destroy()
+        
+        # Start batch processing in background thread
+        self.start_batch_processing_thread(spectra_files, output_dir, files_per_batch)
+
+    def on_export_plot(self, event):
+        """Export current spectral plot with high quality settings"""
+        if not hasattr(self, 'spectral_figure'):
+            wx.MessageBox("No plot to export", "Error", wx.OK | wx.ICON_WARNING)
+            return
+            
+        dlg = wx.FileDialog(self, "Save plot as...", 
+                           wildcard="PNG files (*.png)|*.png|PDF files (*.pdf)|*.pdf|SVG files (*.svg)|*.svg", 
+                           style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            filepath = dlg.GetPath()
+            try:
+                # Ensure tight layout before saving
+                self.spectral_figure.tight_layout()
+                
+                # High quality export settings
+                self.spectral_figure.savefig(filepath, 
+                                           dpi=300, 
+                                           bbox_inches='tight',
+                                           facecolor=self.spectral_figure.get_facecolor(),
+                                           edgecolor='none',
+                                           transparent=False)
+                
+                wx.MessageBox(f"Plot saved successfully to:\n{filepath}", "Export Complete", wx.OK | wx.ICON_INFORMATION)
+                
+            except Exception as e:
+                wx.MessageBox(f"Error saving plot: {str(e)}", "Export Error", wx.OK | wx.ICON_ERROR)
+                
+        dlg.Destroy()
+        
+    def on_batch_download(self, event):
+        """Add all filtered datasets to download queue"""
+        for dataset in self.filtered_data:
+            index = self.download_list.GetItemCount()
+            dataset_title = dataset.get('ecosis', {}).get('package_title', 'Unknown')
+            self.download_list.InsertItem(index, dataset_title)
+            self.download_list.SetItem(index, 1, "Queued")
+            self.download_list.SetItem(index, 2, "0%")
+            self.download_list.SetItem(index, 3, "Unknown")
+
+    def on_api_settings(self, event):
+        """Show API settings dialog"""
+        dlg = APISettingsDialog(self)
+        dlg.ShowModal()
+        dlg.Destroy()
+        
+    def on_refresh(self, event):
+        """Refresh data from API"""
+        self.load_api_data_threaded()
+        
+    def on_exit(self, event):
+        """Exit application with proper cleanup"""
+        # Set destruction flag immediately
+        self._destroyed = True
+        
+        # Stop all timers
+        self.cleanup_timers_safe()
+        
+        # Save configuration
+        self.save_config()
+        
+        # Clean up AUI manager
+        if self._mgr:
+            self._mgr.UnInit()
+        
+        # Destroy window
+        self.Destroy()
+
+
+class APISettingsDialog(wx.Dialog):
+    """Dialog for configuring API settings"""
+    
+    def __init__(self, parent):
+        super().__init__(parent, title="API Settings", size=(400, 300))
+        
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # API endpoints configuration
+        endpoints_box = wx.StaticBox(self, label="API Endpoints")
+        endpoints_sizer = wx.StaticBoxSizer(endpoints_box, wx.VERTICAL)
+        
+        self.endpoints_list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.endpoints_list.AppendColumn("Endpoint", width=200)
+        self.endpoints_list.AppendColumn("Status", width=100)
+        
+        # Add default endpoints
+        endpoints = [
+            ("datasets", "Active"),
+            ("spectral", "Active"),
+            ("hyperspectral", "Active"),
+            ("multispectral", "Active")
+        ]
+        
+        for i, (endpoint, status) in enumerate(endpoints):
+            self.endpoints_list.InsertItem(i, endpoint)
+            self.endpoints_list.SetItem(i, 1, status)
+            
+        endpoints_sizer.Add(self.endpoints_list, 1, wx.EXPAND | wx.ALL, 5)
+        sizer.Add(endpoints_sizer, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # Buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        test_btn = wx.Button(self, label="Test Connection")
+        btn_sizer.Add(test_btn, 0, wx.ALL, 5)
+        
+        ok_btn = wx.Button(self, wx.ID_OK, "OK")
+        cancel_btn = wx.Button(self, wx.ID_CANCEL, "Cancel")
+        btn_sizer.Add(ok_btn, 0, wx.ALL, 5)
+        btn_sizer.Add(cancel_btn, 0, wx.ALL, 5)
+        
+        sizer.Add(btn_sizer, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        
+        self.SetSizer(sizer)
+
+
+class EcosysApp(wx.App):
+    """Main application class"""
+    
+    def OnInit(self):
+        frame = EcosysAPICurator()
+        frame.Show()
+        return True
+
+
+if __name__ == '__main__':
+    app = EcosysApp()
+    app.MainLoop()
